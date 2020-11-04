@@ -3,7 +3,7 @@ set -ex
 basedir=$(cd $(dirname $0) && pwd -P)
 
 oope=github.com/ooni/psiphon
-psirootdir=.
+psirootdir=oopsi
 psidir=$psirootdir/github.com/Psiphon-Labs/psiphon-tunnel-core
 psitempdir=psi.temp
 
