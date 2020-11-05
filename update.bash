@@ -44,8 +44,6 @@ for file in $(find . -type f -name \*.go); do
   mv $file.new $file
 done
 
-git add .
-
 # Quirk: we need to disable QUIC when using Go 1.14 because there is conflict
 # between the qtls version vendored by Psiphon and Go 1.15 stdlib.
 for file in $(git grep PSIPHON_DISABLE_QUIC|awk -F: '{print $1}'|sort -u); do
@@ -53,4 +51,14 @@ for file in $(git grep PSIPHON_DISABLE_QUIC|awk -F: '{print $1}'|sort -u); do
   mv $file.new $file
 done
 
-git add .
+# Quirk: we want to use a more recent version of creack/goselect that
+# supports MIPS (https://github.com/ooni/probe-engine/pull/313). It may
+# be a good idea to submit a PR to Psiphon to fix this issue.
+for file in $(git grep creack/goselect|awk -F: '{print $1}'|sort -u); do
+  cat $file | \
+    sed -e "s@$oope/$psirootdir/github.com/creack/goselect@github.com/creack/goselect@g" \
+      > $file.new
+  mv $file.new $file
+done
+
+go mod tidy
