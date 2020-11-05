@@ -1,4 +1,4 @@
-// +build !PSIPHON_DISABLE_QUIC
+// +build !go1.15
 
 /*
  * Copyright (c) 2018, Psiphon Inc.
