@@ -1,3 +1,5 @@
+// +build PSIPHON_DISABLE_QUIC
+
 /*
  * Copyright (c) 2020, Psiphon Inc.
  * All rights reserved.
