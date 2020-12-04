@@ -23,3 +23,5 @@ not serving OONI's objectives anymore.
 
 See ./update.bash for more information as well as to update
 to the latest client-staging version of Psiphon.
+
+Report issues for this repo at https://github.com/ooni/probe-engine/issues.
