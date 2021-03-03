@@ -32,6 +32,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -133,6 +134,7 @@ func TestSSH(t *testing.T) {
 			doDanglingTCPConn:    true,
 			doPacketManipulation: false,
 			doBurstMonitor:       false,
+			doSplitTunnel:        false,
 		})
 }
 
@@ -154,6 +156,7 @@ func TestOSSH(t *testing.T) {
 			doDanglingTCPConn:    true,
 			doPacketManipulation: false,
 			doBurstMonitor:       false,
+			doSplitTunnel:        false,
 		})
 }
 
@@ -175,6 +178,7 @@ func TestFragmentedOSSH(t *testing.T) {
 			doDanglingTCPConn:    true,
 			doPacketManipulation: false,
 			doBurstMonitor:       false,
+			doSplitTunnel:        false,
 		})
 }
 
@@ -196,6 +200,7 @@ func TestUnfrontedMeek(t *testing.T) {
 			doDanglingTCPConn:    true,
 			doPacketManipulation: false,
 			doBurstMonitor:       false,
+			doSplitTunnel:        false,
 		})
 }
 
@@ -218,6 +223,7 @@ func TestUnfrontedMeekHTTPS(t *testing.T) {
 			doDanglingTCPConn:    true,
 			doPacketManipulation: false,
 			doBurstMonitor:       false,
+			doSplitTunnel:        false,
 		})
 }
 
@@ -240,6 +246,7 @@ func TestUnfrontedMeekHTTPSTLS13(t *testing.T) {
 			doDanglingTCPConn:    true,
 			doPacketManipulation: false,
 			doBurstMonitor:       false,
+			doSplitTunnel:        false,
 		})
 }
 
@@ -262,6 +269,7 @@ func TestUnfrontedMeekSessionTicket(t *testing.T) {
 			doDanglingTCPConn:    true,
 			doPacketManipulation: false,
 			doBurstMonitor:       false,
+			doSplitTunnel:        false,
 		})
 }
 
@@ -284,6 +292,7 @@ func TestUnfrontedMeekSessionTicketTLS13(t *testing.T) {
 			doDanglingTCPConn:    true,
 			doPacketManipulation: false,
 			doBurstMonitor:       false,
+			doSplitTunnel:        false,
 		})
 }
 
@@ -308,6 +317,7 @@ func TestQUICOSSH(t *testing.T) {
 			doDanglingTCPConn:    false,
 			doPacketManipulation: false,
 			doBurstMonitor:       false,
+			doSplitTunnel:        false,
 		})
 }
 
@@ -332,6 +342,7 @@ func TestMarionetteOSSH(t *testing.T) {
 			doDanglingTCPConn:    false,
 			doPacketManipulation: false,
 			doBurstMonitor:       false,
+			doSplitTunnel:        false,
 		})
 }
 
@@ -353,6 +364,7 @@ func TestWebTransportAPIRequests(t *testing.T) {
 			doDanglingTCPConn:    false,
 			doPacketManipulation: false,
 			doBurstMonitor:       false,
+			doSplitTunnel:        false,
 		})
 }
 
@@ -374,6 +386,7 @@ func TestHotReload(t *testing.T) {
 			doDanglingTCPConn:    false,
 			doPacketManipulation: false,
 			doBurstMonitor:       false,
+			doSplitTunnel:        false,
 		})
 }
 
@@ -395,6 +408,7 @@ func TestDefaultSponsorID(t *testing.T) {
 			doDanglingTCPConn:    false,
 			doPacketManipulation: false,
 			doBurstMonitor:       false,
+			doSplitTunnel:        false,
 		})
 }
 
@@ -416,6 +430,7 @@ func TestDenyTrafficRules(t *testing.T) {
 			doDanglingTCPConn:    false,
 			doPacketManipulation: false,
 			doBurstMonitor:       false,
+			doSplitTunnel:        false,
 		})
 }
 
@@ -437,6 +452,7 @@ func TestOmitAuthorization(t *testing.T) {
 			doDanglingTCPConn:    false,
 			doPacketManipulation: false,
 			doBurstMonitor:       false,
+			doSplitTunnel:        false,
 		})
 }
 
@@ -458,6 +474,7 @@ func TestNoAuthorization(t *testing.T) {
 			doDanglingTCPConn:    false,
 			doPacketManipulation: false,
 			doBurstMonitor:       false,
+			doSplitTunnel:        false,
 		})
 }
 
@@ -479,6 +496,7 @@ func TestUnusedAuthorization(t *testing.T) {
 			doDanglingTCPConn:    false,
 			doPacketManipulation: false,
 			doBurstMonitor:       false,
+			doSplitTunnel:        false,
 		})
 }
 
@@ -500,6 +518,7 @@ func TestTCPOnlySLOK(t *testing.T) {
 			doDanglingTCPConn:    false,
 			doPacketManipulation: false,
 			doBurstMonitor:       false,
+			doSplitTunnel:        false,
 		})
 }
 
@@ -521,6 +540,7 @@ func TestUDPOnlySLOK(t *testing.T) {
 			doDanglingTCPConn:    false,
 			doPacketManipulation: false,
 			doBurstMonitor:       false,
+			doSplitTunnel:        false,
 		})
 }
 
@@ -542,6 +562,7 @@ func TestLivenessTest(t *testing.T) {
 			doDanglingTCPConn:    false,
 			doPacketManipulation: false,
 			doBurstMonitor:       false,
+			doSplitTunnel:        false,
 		})
 }
 
@@ -563,6 +584,7 @@ func TestPruneServerEntries(t *testing.T) {
 			doDanglingTCPConn:    false,
 			doPacketManipulation: false,
 			doBurstMonitor:       false,
+			doSplitTunnel:        false,
 		})
 }
 
@@ -584,6 +606,29 @@ func TestBurstMonitor(t *testing.T) {
 			doDanglingTCPConn:    true,
 			doPacketManipulation: false,
 			doBurstMonitor:       true,
+			doSplitTunnel:        false,
+		})
+}
+
+func TestSplitTunnel(t *testing.T) {
+	runServer(t,
+		&runServerConfig{
+			tunnelProtocol:       "OSSH",
+			enableSSHAPIRequests: true,
+			doHotReload:          false,
+			doDefaultSponsorID:   false,
+			denyTrafficRules:     false,
+			requireAuthorization: true,
+			omitAuthorization:    false,
+			doTunneledWebRequest: true,
+			doTunneledNTPRequest: true,
+			forceFragmenting:     false,
+			forceLivenessTest:    false,
+			doPruneServerEntries: false,
+			doDanglingTCPConn:    true,
+			doPacketManipulation: false,
+			doBurstMonitor:       false,
+			doSplitTunnel:        true,
 		})
 }
 
@@ -604,12 +649,14 @@ type runServerConfig struct {
 	doDanglingTCPConn    bool
 	doPacketManipulation bool
 	doBurstMonitor       bool
+	doSplitTunnel        bool
 }
 
 var (
-	testSSHClientVersions = []string{"SSH-2.0-A", "SSH-2.0-B", "SSH-2.0-C"}
-	testUserAgents        = []string{"ua1", "ua2", "ua3"}
-	testNetworkType       = "WIFI"
+	testSSHClientVersions   = []string{"SSH-2.0-A", "SSH-2.0-B", "SSH-2.0-C"}
+	testUserAgents          = []string{"ua1", "ua2", "ua3"}
+	testNetworkType         = "WIFI"
+	testCustomHostNameRegex = `[a-z0-9]{5,10}\.example\.org`
 )
 
 var serverRuns = 0
@@ -748,7 +795,15 @@ func runServer(t *testing.T, runConfig *runServerConfig) {
 
 	var serverConfig map[string]interface{}
 	json.Unmarshal(serverConfigJSON, &serverConfig)
-	serverConfig["GeoIPDatabaseFilename"] = ""
+
+	// The test GeoIP database maps all IPs to a single, non-"None" country. When
+	// split tunnel mode is enabled, this should cause port forwards to be
+	// untunneled. When split tunnel mode is not enabled, port forwards should be
+	// tunneled despite the country match.
+	geoIPDatabaseFilename := filepath.Join(testDataDirName, "geoip_database.mmbd")
+	paveGeoIPDatabaseFile(t, geoIPDatabaseFilename)
+	serverConfig["GeoIPDatabaseFilenames"] = []string{geoIPDatabaseFilename}
+
 	serverConfig["PsinetDatabaseFilename"] = psinetFilename
 	serverConfig["TrafficRulesFilename"] = trafficRulesFilename
 	serverConfig["OSLConfigFilename"] = oslConfigFilename
@@ -943,6 +998,10 @@ func runServer(t *testing.T, runConfig *runServerConfig) {
 	clientConfig.EmitSLOKs = true
 	clientConfig.EmitServerAlerts = true
 
+	if runConfig.doSplitTunnel {
+		clientConfig.EnableSplitTunnel = true
+	}
+
 	if !runConfig.omitAuthorization {
 		clientConfig.Authorizations = []string{clientAuthorization}
 	}
@@ -1042,11 +1101,10 @@ func runServer(t *testing.T, runConfig *runServerConfig) {
 	tunnelsEstablished := make(chan struct{}, 1)
 	homepageReceived := make(chan struct{}, 1)
 	slokSeeded := make(chan struct{}, 1)
-
 	numPruneNotices := 0
 	pruneServerEntriesNoticesEmitted := make(chan struct{}, 1)
-
 	serverAlertDisallowedNoticesEmitted := make(chan struct{}, 1)
+	untunneledPortForward := make(chan struct{}, 1)
 
 	psiphon.SetNoticeWriter(psiphon.NewNoticeReceiver(
 		func(notice []byte) {
@@ -1091,6 +1149,10 @@ func runServer(t *testing.T, runConfig *runServerConfig) {
 				if reason == protocol.PSIPHON_API_ALERT_DISALLOWED_TRAFFIC {
 					sendNotificationReceived(serverAlertDisallowedNoticesEmitted)
 				}
+
+			case "Untunneled":
+				sendNotificationReceived(untunneledPortForward)
+
 			}
 		}))
 
@@ -1223,6 +1285,24 @@ func runServer(t *testing.T, runConfig *runServerConfig) {
 		defer danglingConn.Close()
 	}
 
+	// Test: check for split tunnel notice
+
+	if runConfig.doSplitTunnel {
+		if !runConfig.doTunneledWebRequest || expectTrafficFailure {
+			t.Fatalf("invalid test run configuration")
+		}
+		waitOnNotification(t, untunneledPortForward, nil, "")
+	} else {
+		// There should be no "Untunneled" notice. This check assumes that any
+		// unexpected Untunneled notice will have been delivered at this point,
+		// after the SLOK notice.
+		select {
+		case <-untunneledPortForward:
+			t.Fatalf("unexpected untunnedl port forward")
+		default:
+		}
+	}
+
 	// Shutdown to ensure logs/notices are flushed
 
 	stopClient()
@@ -1280,6 +1360,25 @@ func runServer(t *testing.T, runConfig *runServerConfig) {
 
 	// Check that datastore had retained/pruned server entries as expected.
 	checkPruneServerEntriesTest(t, runConfig, testDataDirName, pruneServerEntryTestCases)
+}
+
+func sendNotificationReceived(c chan<- struct{}) {
+	select {
+	case c <- struct{}{}:
+	default:
+	}
+}
+
+func waitOnNotification(t *testing.T, c, timeoutSignal <-chan struct{}, timeoutMessage string) {
+	if timeoutSignal == nil {
+		<-c
+	} else {
+		select {
+		case <-c:
+		case <-timeoutSignal:
+			t.Fatalf(timeoutMessage)
+		}
+	}
 }
 
 func checkExpectedServerTunnelLogFields(
@@ -1375,6 +1474,15 @@ func checkExpectedServerTunnelLogFields(
 			}
 		}
 
+		hostName := fields["meek_host_header"].(string)
+		dialPortNumber := int(fields["dial_port_number"].(float64))
+		if dialPortNumber != 80 {
+			hostName, _, _ = net.SplitHostPort(hostName)
+		}
+		if regexp.MustCompile(testCustomHostNameRegex).FindString(hostName) != hostName {
+			return fmt.Errorf("unexpected meek_host_header '%s'", fields["meek_host_header"])
+		}
+
 		for _, name := range []string{
 			"meek_dial_ip_address",
 			"meek_resolved_ip_address",
@@ -1395,6 +1503,11 @@ func checkExpectedServerTunnelLogFields(
 			if fields[name] == nil || fmt.Sprintf("%s", fields[name]) == "" {
 				return fmt.Errorf("missing expected field '%s'", name)
 			}
+		}
+
+		hostName := fields["meek_sni_server_name"].(string)
+		if regexp.MustCompile(testCustomHostNameRegex).FindString(hostName) != hostName {
+			return fmt.Errorf("unexpected meek_sni_server_name '%s'", fields["meek_sni_server_name"])
 		}
 
 		for _, name := range []string{
@@ -2087,7 +2200,10 @@ func paveTacticsConfigFile(
                 "AppFlag1" : true,
                 "AppConfig1" : {"Option1" : "A", "Option2" : "B"},
                 "AppSwitches1" : [1, 2, 3, 4]
-              }
+              },
+              "CustomHostNameRegexes": ["%s"],
+              "CustomHostNameProbability": 1.0,
+              "CustomHostNameLimitProtocols": ["%s"]
             }
           }
         }
@@ -2117,7 +2233,9 @@ func paveTacticsConfigFile(
 		tunnelProtocol,
 		tunnelProtocol,
 		livenessTestSize, livenessTestSize, livenessTestSize, livenessTestSize,
-		propagationChannelID)
+		propagationChannelID,
+		strings.ReplaceAll(testCustomHostNameRegex, `\`, `\\`),
+		tunnelProtocol)
 
 	err := ioutil.WriteFile(tacticsConfigFilename, []byte(tacticsConfigJSON), 0600)
 	if err != nil {
@@ -2133,25 +2251,6 @@ func paveBlocklistFile(t *testing.T, blocklistFilename string) {
 	err := ioutil.WriteFile(blocklistFilename, []byte(blocklistContent), 0600)
 	if err != nil {
 		t.Fatalf("error paving blocklist file: %s", err)
-	}
-}
-
-func sendNotificationReceived(c chan<- struct{}) {
-	select {
-	case c <- struct{}{}:
-	default:
-	}
-}
-
-func waitOnNotification(t *testing.T, c, timeoutSignal <-chan struct{}, timeoutMessage string) {
-	if timeoutSignal == nil {
-		<-c
-	} else {
-		select {
-		case <-c:
-		case <-timeoutSignal:
-			t.Fatalf(timeoutMessage)
-		}
 	}
 }
 

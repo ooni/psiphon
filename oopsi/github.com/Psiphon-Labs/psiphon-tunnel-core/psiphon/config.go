@@ -129,6 +129,11 @@ type Config struct {
 	// in any country is selected.
 	EgressRegion string
 
+	// EnableSplitTunnel toggles split tunnel mode. When enabled, TCP port
+	// forward destinations that resolve to the same GeoIP country as the client
+	// are connected to directly, untunneled.
+	EnableSplitTunnel bool
+
 	// ListenInterface specifies which interface to listen on.  If no
 	// interface is provided then listen on 127.0.0.1. If 'any' is provided
 	// then use 0.0.0.0. If there are multiple IP addresses on an interface
@@ -348,27 +353,6 @@ type Config struct {
 	// with the same ETag. At least one DownloadURL must have
 	// OnlyAfterAttempts = 0.
 	ObfuscatedServerListRootURLs parameters.TransferURLs
-
-	// SplitTunnelRoutesURLFormat is a URL which specifies the location of a
-	// routes file to use for split tunnel mode. The URL must include a
-	// placeholder for the client region to be supplied. Split tunnel mode
-	// uses the routes file to classify port forward destinations as foreign
-	// or domestic and does not tunnel domestic destinations. Split tunnel
-	// mode is on when all the SplitTunnel parameters are supplied. This value
-	// is supplied by and depends on the Psiphon Network, and is typically
-	// embedded in the client binary.
-	SplitTunnelRoutesURLFormat string
-
-	// SplitTunnelRoutesSignaturePublicKey specifies a public key that's used
-	// to authenticate the split tunnel routes payload. This value is supplied
-	// by and depends on the Psiphon Network, and is typically embedded in the
-	// client binary.
-	SplitTunnelRoutesSignaturePublicKey string
-
-	// SplitTunnelDNSServer specifies a DNS server to use when resolving port
-	// forward target domain names to IP addresses for classification. The DNS
-	// server must support TCP requests.
-	SplitTunnelDNSServer string
 
 	// UpgradeDownloadURLs is list of URLs which specify locations from which
 	// to download a host client upgrade file, when one is available. The core
@@ -735,6 +719,12 @@ type Config struct {
 	// ApplicationParameters is for testing purposes.
 	ApplicationParameters parameters.KeyValues
 
+	// CustomHostNameRegexes and other custom host name fields are for testing
+	// purposes.
+	CustomHostNameRegexes        []string
+	CustomHostNameProbability    *float64
+	CustomHostNameLimitProtocols []string
+
 	// params is the active parameters.Parameters with defaults, config values,
 	// and, optionally, tactics applied.
 	//
@@ -852,7 +842,7 @@ func (config *Config) Commit(migrateFromLegacyFields bool) error {
 	if config.DataRootDirectory == "" {
 		wd, err := os.Getwd()
 		if err != nil {
-			return errors.Trace(err)
+			return errors.Trace(StripFilePathsError(err))
 		}
 		config.DataRootDirectory = wd
 	}
@@ -862,7 +852,7 @@ func (config *Config) Commit(migrateFromLegacyFields bool) error {
 	if !common.FileExists(dataDirectoryPath) {
 		err := os.Mkdir(dataDirectoryPath, os.ModePerm)
 		if err != nil {
-			return errors.Tracef("failed to create datastore directory %s with error: %s", dataDirectoryPath, err.Error())
+			return errors.Tracef("failed to create datastore directory with error: %s", StripFilePathsError(err, dataDirectoryPath))
 		}
 	}
 
@@ -889,16 +879,19 @@ func (config *Config) Commit(migrateFromLegacyFields bool) error {
 			noticeMigrationInfoMsgs = append(noticeMigrationInfoMsgs, "Config migration: need migration")
 			noticeMigrations := migrationsFromLegacyNoticeFilePaths(config)
 
+			successfulMigrations := 0
+
 			for _, migration := range noticeMigrations {
-				err := common.DoFileMigration(migration)
+				err := DoFileMigration(migration)
 				if err != nil {
 					alertMsg := fmt.Sprintf("Config migration: %s", errors.Trace(err))
 					noticeMigrationAlertMsgs = append(noticeMigrationAlertMsgs, alertMsg)
 				} else {
-					infoMsg := fmt.Sprintf("Config migration: moved %s to %s", migration.OldPath, migration.NewPath)
-					noticeMigrationInfoMsgs = append(noticeMigrationInfoMsgs, infoMsg)
+					successfulMigrations += 1
 				}
 			}
+			infoMsg := fmt.Sprintf("Config migration: %d/%d notice files successfully migrated", successfulMigrations, len(noticeMigrations))
+			noticeMigrationInfoMsgs = append(noticeMigrationInfoMsgs, infoMsg)
 		} else {
 			noticeMigrationInfoMsgs = append(noticeMigrationInfoMsgs, "Config migration: migration already completed")
 		}
@@ -966,7 +959,7 @@ func (config *Config) Commit(migrateFromLegacyFields bool) error {
 	if !common.FileExists(dataStoreDirectoryPath) {
 		err := os.Mkdir(dataStoreDirectoryPath, os.ModePerm)
 		if err != nil {
-			return errors.Tracef("failed to create datastore directory %s with error: %s", dataStoreDirectoryPath, err.Error())
+			return errors.Tracef("failed to create datastore directory with error: %s", StripFilePathsError(err, dataStoreDirectoryPath))
 		}
 	}
 
@@ -975,7 +968,7 @@ func (config *Config) Commit(migrateFromLegacyFields bool) error {
 	if !common.FileExists(oslDirectoryPath) {
 		err := os.Mkdir(oslDirectoryPath, os.ModePerm)
 		if err != nil {
-			return errors.Tracef("failed to create osl directory %s with error: %s", oslDirectoryPath, err.Error())
+			return errors.Tracef("failed to create osl directory with error: %s", StripFilePathsError(err, oslDirectoryPath))
 		}
 	}
 
@@ -990,7 +983,7 @@ func (config *Config) Commit(migrateFromLegacyFields bool) error {
 	// Validate config fields.
 
 	if !common.FileExists(config.DataRootDirectory) {
-		return errors.Tracef("DataRootDirectory does not exist: %s", config.DataRootDirectory)
+		return errors.TraceNew("DataRootDirectory does not exist")
 	}
 
 	if config.PropagationChannelId == "" {
@@ -1024,15 +1017,6 @@ func (config *Config) Commit(migrateFromLegacyFields bool) error {
 			if config.RemoteServerListSignaturePublicKey == "" {
 				return errors.TraceNew("missing RemoteServerListSignaturePublicKey")
 			}
-		}
-	}
-
-	if config.SplitTunnelRoutesURLFormat != "" {
-		if config.SplitTunnelRoutesSignaturePublicKey == "" {
-			return errors.TraceNew("missing SplitTunnelRoutesSignaturePublicKey")
-		}
-		if config.SplitTunnelDNSServer == "" {
-			return errors.TraceNew("missing SplitTunnelDNSServer")
 		}
 	}
 
@@ -1140,7 +1124,7 @@ func (config *Config) Commit(migrateFromLegacyFields bool) error {
 			if err != nil {
 				return errors.Trace(err)
 			}
-			NoticeInfo("MigrateDataStoreDirectory unset, using working directory %s", wd)
+			NoticeInfo("MigrateDataStoreDirectory unset, using working directory")
 			config.MigrateDataStoreDirectory = wd
 		}
 
@@ -1154,31 +1138,33 @@ func (config *Config) Commit(migrateFromLegacyFields bool) error {
 
 		// Do migrations
 
+		successfulMigrations := 0
 		for _, migration := range migrations {
-			err := common.DoFileMigration(migration)
+			err := DoFileMigration(migration)
 			if err != nil {
 				NoticeWarning("Config migration: %s", errors.Trace(err))
 			} else {
-				NoticeInfo("Config migration: moved %s to %s", migration.OldPath, migration.NewPath)
+				successfulMigrations += 1
 			}
 		}
+		NoticeInfo(fmt.Sprintf("Config migration: %d/%d legacy files successfully migrated", successfulMigrations, len(migrations)))
 
 		// Remove OSL directory if empty
 		if config.MigrateObfuscatedServerListDownloadDirectory != "" {
 			files, err := ioutil.ReadDir(config.MigrateObfuscatedServerListDownloadDirectory)
 			if err != nil {
-				NoticeWarning("Error reading OSL directory %s: %s", config.MigrateObfuscatedServerListDownloadDirectory, errors.Trace(err))
+				NoticeWarning("Error reading OSL directory: %s", errors.Trace(StripFilePathsError(err, config.MigrateObfuscatedServerListDownloadDirectory)))
 			} else if len(files) == 0 {
 				err := os.Remove(config.MigrateObfuscatedServerListDownloadDirectory)
 				if err != nil {
-					NoticeWarning("Error deleting empty OSL directory %s: %s", config.MigrateObfuscatedServerListDownloadDirectory, errors.Trace(err))
+					NoticeWarning("Error deleting empty OSL directory: %s", errors.Trace(StripFilePathsError(err, config.MigrateObfuscatedServerListDownloadDirectory)))
 				}
 			}
 		}
 
 		f, err := os.Create(migrationCompleteFilePath)
 		if err != nil {
-			NoticeWarning("Config migration: failed to create %s with error %s", migrationCompleteFilePath, errors.Trace(err))
+			NoticeWarning("Config migration: failed to create migration completed file with error %s", errors.Trace(StripFilePathsError(err, migrationCompleteFilePath)))
 		} else {
 			NoticeInfo("Config migration: completed")
 			f.Close()
@@ -1445,10 +1431,6 @@ func (config *Config) makeConfigParameters() map[string]interface{} {
 
 	}
 
-	applyParameters[parameters.SplitTunnelRoutesURLFormat] = config.SplitTunnelRoutesURLFormat
-	applyParameters[parameters.SplitTunnelRoutesSignaturePublicKey] = config.SplitTunnelRoutesSignaturePublicKey
-	applyParameters[parameters.SplitTunnelDNSServer] = config.SplitTunnelDNSServer
-
 	if config.UpgradeDownloadURLs != nil {
 		applyParameters[parameters.UpgradeDownloadClientVersionHeader] = config.UpgradeDownloadClientVersionHeader
 		applyParameters[parameters.UpgradeDownloadURLs] = config.UpgradeDownloadURLs
@@ -1614,6 +1596,18 @@ func (config *Config) makeConfigParameters() map[string]interface{} {
 
 	if config.ApplicationParameters != nil {
 		applyParameters[parameters.ApplicationParameters] = config.ApplicationParameters
+	}
+
+	if config.CustomHostNameRegexes != nil {
+		applyParameters[parameters.CustomHostNameRegexes] = parameters.RegexStrings(config.CustomHostNameRegexes)
+	}
+
+	if config.CustomHostNameProbability != nil {
+		applyParameters[parameters.CustomHostNameProbability] = *config.CustomHostNameProbability
+	}
+
+	if config.CustomHostNameLimitProtocols != nil {
+		applyParameters[parameters.CustomHostNameLimitProtocols] = protocol.TunnelProtocols(config.CustomHostNameLimitProtocols)
 	}
 
 	return applyParameters
@@ -1845,24 +1839,27 @@ func (n *loggingNetworkIDGetter) GetNetworkID() string {
 // with the legacy config fields HomepageNoticesFilename and
 // RotatingNoticesFilename, to the new file paths used by Psiphon which exist
 // under the data root directory.
-func migrationsFromLegacyNoticeFilePaths(config *Config) []common.FileMigration {
-	var noticeMigrations []common.FileMigration
+func migrationsFromLegacyNoticeFilePaths(config *Config) []FileMigration {
+	var noticeMigrations []FileMigration
 
 	if config.MigrateHomepageNoticesFilename != "" {
-		noticeMigrations = append(noticeMigrations, common.FileMigration{
+		noticeMigrations = append(noticeMigrations, FileMigration{
+			Name:    "hompage",
 			OldPath: config.MigrateHomepageNoticesFilename,
 			NewPath: config.GetHomePageFilename(),
 		})
 	}
 
 	if config.MigrateRotatingNoticesFilename != "" {
-		migrations := []common.FileMigration{
+		migrations := []FileMigration{
 			{
+				Name:    "notices",
 				OldPath: config.MigrateRotatingNoticesFilename,
 				NewPath: config.GetNoticesFilename(),
 				IsDir:   false,
 			},
 			{
+				Name:    "notices.1",
 				OldPath: config.MigrateRotatingNoticesFilename + ".1",
 				NewPath: config.GetNoticesFilename() + ".1",
 			},
@@ -1877,14 +1874,17 @@ func migrationsFromLegacyNoticeFilePaths(config *Config) []common.FileMigration 
 // performed to move files from legacy file paths, which were configured with
 // legacy config fields, to the new file paths used by Psiphon which exist
 // under the data root directory.
-func migrationsFromLegacyFilePaths(config *Config) ([]common.FileMigration, error) {
+// Note: an attempt is made to redact any file paths from the returned error.
+func migrationsFromLegacyFilePaths(config *Config) ([]FileMigration, error) {
 
-	migrations := []common.FileMigration{
+	migrations := []FileMigration{
 		{
+			Name:    "psiphon.boltdb",
 			OldPath: filepath.Join(config.MigrateDataStoreDirectory, "psiphon.boltdb"),
 			NewPath: filepath.Join(config.GetDataStoreDirectory(), "psiphon.boltdb"),
 		},
 		{
+			Name:    "psiphon.boltdb.lock",
 			OldPath: filepath.Join(config.MigrateDataStoreDirectory, "psiphon.boltdb.lock"),
 			NewPath: filepath.Join(config.GetDataStoreDirectory(), "psiphon.boltdb.lock"),
 		},
@@ -1894,16 +1894,19 @@ func migrationsFromLegacyFilePaths(config *Config) ([]common.FileMigration, erro
 
 		// Migrate remote server list files
 
-		rslMigrations := []common.FileMigration{
+		rslMigrations := []FileMigration{
 			{
+				Name:    "remote_server_list",
 				OldPath: config.MigrateRemoteServerListDownloadFilename,
 				NewPath: config.GetRemoteServerListDownloadFilename(),
 			},
 			{
+				Name:    "remote_server_list.part",
 				OldPath: config.MigrateRemoteServerListDownloadFilename + ".part",
 				NewPath: config.GetRemoteServerListDownloadFilename() + ".part",
 			},
 			{
+				Name:    "remote_server_list.part.etag",
 				OldPath: config.MigrateRemoteServerListDownloadFilename + ".part.etag",
 				NewPath: config.GetRemoteServerListDownloadFilename() + ".part.etag",
 			},
@@ -1923,11 +1926,12 @@ func migrationsFromLegacyFilePaths(config *Config) ([]common.FileMigration, erro
 
 		files, err := ioutil.ReadDir(config.MigrateObfuscatedServerListDownloadDirectory)
 		if err != nil {
-			NoticeWarning("Migration: failed to read directory %s with error %s", config.MigrateObfuscatedServerListDownloadDirectory, err)
+			NoticeWarning("Migration: failed to read OSL download directory with error %s", StripFilePathsError(err, config.MigrateObfuscatedServerListDownloadDirectory))
 		} else {
 			for _, file := range files {
 				if oslFileRegex.MatchString(file.Name()) {
-					fileMigration := common.FileMigration{
+					fileMigration := FileMigration{
+						Name:    "osl",
 						OldPath: filepath.Join(config.MigrateObfuscatedServerListDownloadDirectory, file.Name()),
 						NewPath: filepath.Join(config.GetObfuscatedServerListDownloadDirectory(), file.Name()),
 					}
@@ -1957,7 +1961,7 @@ func migrationsFromLegacyFilePaths(config *Config) ([]common.FileMigration, erro
 
 		files, err := ioutil.ReadDir(upgradeDownloadDir)
 		if err != nil {
-			NoticeWarning("Migration: failed to read directory %s with error %s", upgradeDownloadDir, err)
+			NoticeWarning("Migration: failed to read upgrade download directory with error %s", StripFilePathsError(err, upgradeDownloadDir))
 		} else {
 
 			for _, file := range files {
@@ -1966,7 +1970,8 @@ func migrationsFromLegacyFilePaths(config *Config) ([]common.FileMigration, erro
 
 					oldFileSuffix := strings.TrimPrefix(file.Name(), oldUpgradeDownloadFilename)
 
-					fileMigration := common.FileMigration{
+					fileMigration := FileMigration{
+						Name:    "upgrade",
 						OldPath: filepath.Join(upgradeDownloadDir, file.Name()),
 						NewPath: config.GetUpgradeDownloadFilename() + oldFileSuffix,
 					}
