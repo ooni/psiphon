@@ -1226,7 +1226,7 @@ type sshClient struct {
 	preHandshakeRandomStreamMetrics      randomStreamMetrics
 	postHandshakeRandomStreamMetrics     randomStreamMetrics
 	sendAlertRequests                    chan protocol.AlertRequest
-	sentAlertRequests                    map[protocol.AlertRequest]bool
+	sentAlertRequests                    map[string]bool
 }
 
 type trafficState struct {
@@ -1318,7 +1318,7 @@ func newSshClient(
 		stopRunning:                      stopRunning,
 		stopped:                          make(chan struct{}),
 		sendAlertRequests:                make(chan protocol.AlertRequest, ALERT_REQUEST_QUEUE_BUFFER_SIZE),
-		sentAlertRequests:                make(map[protocol.AlertRequest]bool),
+		sentAlertRequests:                make(map[string]bool),
 	}
 
 	client.tcpTrafficState.availablePortForwardCond = sync.NewCond(new(sync.Mutex))
@@ -2161,7 +2161,7 @@ func (sshClient *sshClient) handleNewRandomStreamChannel(
 	// is available pre-handshake, albeit with additional restrictions.
 	//
 	// The random stream is subject to throttling in traffic rules; for
-	// unthrottled liveness tests, set initial   Read/WriteUnthrottledBytes as
+	// unthrottled liveness tests, set initial Read/WriteUnthrottledBytes as
 	// required. The random stream maximum count and response size cap
 	// mitigate clients abusing the facility to waste server resources.
 	//
@@ -2228,18 +2228,26 @@ func (sshClient *sshClient) handleNewRandomStreamChannel(
 	go func() {
 		defer waitGroup.Done()
 
+		upstream := new(sync.WaitGroup)
 		received := 0
 		sent := 0
 
 		if request.UpstreamBytes > 0 {
-			n, err := io.CopyN(ioutil.Discard, channel, int64(request.UpstreamBytes))
-			received = int(n)
-			if err != nil {
-				if !isExpectedTunnelIOError(err) {
-					log.WithTraceFields(LogFields{"error": err}).Warning("receive failed")
+
+			// Process streams concurrently to minimize elapsed time. This also
+			// avoids a unidirectional flow burst early in the tunnel lifecycle.
+
+			upstream.Add(1)
+			go func() {
+				defer upstream.Done()
+				n, err := io.CopyN(ioutil.Discard, channel, int64(request.UpstreamBytes))
+				received = int(n)
+				if err != nil {
+					if !isExpectedTunnelIOError(err) {
+						log.WithTraceFields(LogFields{"error": err}).Warning("receive failed")
+					}
 				}
-				// Fall through and record any bytes received...
-			}
+			}()
 		}
 
 		if request.DownstreamBytes > 0 {
@@ -2251,6 +2259,8 @@ func (sshClient *sshClient) handleNewRandomStreamChannel(
 				}
 			}
 		}
+
+		upstream.Wait()
 
 		sshClient.Lock()
 		metrics.upstreamBytes += request.UpstreamBytes
@@ -2672,7 +2682,7 @@ func (sshClient *sshClient) runAlertSender() {
 				break
 			}
 			sshClient.Lock()
-			sshClient.sentAlertRequests[request] = true
+			sshClient.sentAlertRequests[fmt.Sprintf("%+v", request)] = true
 			sshClient.Unlock()
 		}
 	}
@@ -2684,7 +2694,7 @@ func (sshClient *sshClient) runAlertSender() {
 // not block until the queue exceeds ALERT_REQUEST_QUEUE_BUFFER_SIZE.
 func (sshClient *sshClient) enqueueAlertRequest(request protocol.AlertRequest) {
 	sshClient.Lock()
-	if sshClient.sentAlertRequests[request] {
+	if sshClient.sentAlertRequests[fmt.Sprintf("%+v", request)] {
 		sshClient.Unlock()
 		return
 	}
@@ -2696,18 +2706,44 @@ func (sshClient *sshClient) enqueueAlertRequest(request protocol.AlertRequest) {
 }
 
 func (sshClient *sshClient) enqueueDisallowedTrafficAlertRequest() {
-	sshClient.enqueueAlertRequest(protocol.AlertRequest{
-		Reason: protocol.PSIPHON_API_ALERT_DISALLOWED_TRAFFIC,
-	})
+
+	reason := protocol.PSIPHON_API_ALERT_DISALLOWED_TRAFFIC
+	actionURLs := sshClient.getAlertActionURLs(reason)
+
+	sshClient.enqueueAlertRequest(
+		protocol.AlertRequest{
+			Reason:     protocol.PSIPHON_API_ALERT_DISALLOWED_TRAFFIC,
+			ActionURLs: actionURLs,
+		})
 }
 
 func (sshClient *sshClient) enqueueUnsafeTrafficAlertRequest(tags []BlocklistTag) {
+
+	reason := protocol.PSIPHON_API_ALERT_UNSAFE_TRAFFIC
+	actionURLs := sshClient.getAlertActionURLs(reason)
+
 	for _, tag := range tags {
-		sshClient.enqueueAlertRequest(protocol.AlertRequest{
-			Reason:  protocol.PSIPHON_API_ALERT_UNSAFE_TRAFFIC,
-			Subject: tag.Subject,
-		})
+		sshClient.enqueueAlertRequest(
+			protocol.AlertRequest{
+				Reason:     reason,
+				Subject:    tag.Subject,
+				ActionURLs: actionURLs,
+			})
 	}
+}
+
+func (sshClient *sshClient) getAlertActionURLs(alertReason string) []string {
+
+	sshClient.Lock()
+	sponsorID, _ := getStringRequestParam(
+		sshClient.handshakeState.apiParams, "sponsor_id")
+	sshClient.Unlock()
+
+	return sshClient.sshServer.support.PsinetDatabase.GetAlertActionURLs(
+		alertReason,
+		sponsorID,
+		sshClient.geoIPData.Country,
+		sshClient.geoIPData.ASN)
 }
 
 func (sshClient *sshClient) rejectNewChannel(newChannel ssh.NewChannel, logMessage string) {

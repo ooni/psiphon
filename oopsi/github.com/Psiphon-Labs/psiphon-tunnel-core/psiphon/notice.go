@@ -306,7 +306,6 @@ func makeNoticeInternalError(errorMessage string) []byte {
 	// Format an Alert Notice (_without_ using json.Marshal, since that can fail)
 	alertNoticeFormat := "{\"noticeType\":\"InternalError\",\"timestamp\":\"%s\",\"data\":{\"message\":\"%s\"}}\n"
 	return []byte(fmt.Sprintf(alertNoticeFormat, time.Now().UTC().Format(common.RFC3339Milli), errorMessage))
-
 }
 
 func (nl *noticeLogger) outputNoticeToHomepageFile(noticeFlags uint32, output []byte) error {
@@ -809,7 +808,7 @@ func NoticeActiveAuthorizationIDs(diagnosticID string, activeAuthorizationIDs []
 
 	// Never emit 'null' instead of empty list
 	if activeAuthorizationIDs == nil {
-		activeAuthorizationIDs = make([]string, 0)
+		activeAuthorizationIDs = []string{}
 	}
 
 	singletonNoticeLogger.outputNotice(
@@ -893,12 +892,21 @@ func NoticeApplicationParameters(keyValues parameters.KeyValues) {
 // reported at most once per session.
 func NoticeServerAlert(alert protocol.AlertRequest) {
 
+	// Never emit 'null' instead of empty list
+	actionURLs := alert.ActionURLs
+	if actionURLs == nil {
+		actionURLs = []string{}
+	}
+
 	// This key ensures that each distinct server alert will appear, not repeat,
 	// and not interfere with other alerts appearing.
 	repetitionKey := fmt.Sprintf("ServerAlert-%+v", alert)
 	outputRepetitiveNotice(
 		repetitionKey, "", 0,
-		"ServerAlert", 0, "reason", alert.Reason, "subject", alert.Subject)
+		"ServerAlert", 0,
+		"reason", alert.Reason,
+		"subject", alert.Subject,
+		"actionURLs", actionURLs)
 }
 
 // NoticeBursts reports tunnel data transfer burst metrics.

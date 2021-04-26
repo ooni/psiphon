@@ -119,7 +119,7 @@ public class PsiphonTunnel {
         default public void onActiveAuthorizationIDs(List<String> authorizations) {}
         default public void onTrafficRateLimits(long upstreamBytesPerSecond, long downstreamBytesPerSecond) {}
         default public void onApplicationParameter(String key, Object value) {}
-        default public void onServerAlert(String reason, String subject) {}
+        default public void onServerAlert(String reason, String subject, List<String> actionURLs) {}
         default public void onExiting() {}
     }
 
@@ -267,6 +267,10 @@ public class PsiphonTunnel {
     public synchronized void restartPsiphon() throws Exception {
         stopPsiphon();
         startPsiphon("");
+    }
+
+    public synchronized void reconnectPsiphon() throws Exception {
+        Psi.reconnectTunnel();
     }
 
     // Creates a temporary dummy VPN interface in order to prevent traffic leaking while performing
@@ -976,9 +980,15 @@ public class PsiphonTunnel {
                     notice.getJSONObject("data").getString("key"),
                     notice.getJSONObject("data").get("value"));
             } else if (noticeType.equals("ServerAlert")) {
+                JSONArray actionURLs = notice.getJSONObject("data").getJSONArray("actionURLs");
+                ArrayList<String> actionURLsList = new ArrayList<String>();
+                for (int i=0; i<actionURLs.length(); i++) {
+                    actionURLsList.add(actionURLs.getString(i));
+                }
                 mHostService.onServerAlert(
                     notice.getJSONObject("data").getString("reason"),
-                    notice.getJSONObject("data").getString("subject"));
+                    notice.getJSONObject("data").getString("subject"),
+                    actionURLsList);
             }
 
             if (diagnostic) {
