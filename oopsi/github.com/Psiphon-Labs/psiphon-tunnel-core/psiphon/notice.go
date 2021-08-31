@@ -425,9 +425,10 @@ func NoticeCandidateServers(
 	singletonNoticeLogger.outputNotice(
 		"CandidateServers", noticeIsDiagnostic,
 		"region", region,
-		"initialLimitTunnelProtocols", constraints.initialLimitProtocols,
-		"initialLimitTunnelProtocolsCandidateCount", constraints.initialLimitProtocolsCandidateCount,
-		"limitTunnelProtocols", constraints.limitProtocols,
+		"initialLimitTunnelProtocols", constraints.initialLimitTunnelProtocols,
+		"initialLimitTunnelProtocolsCandidateCount", constraints.initialLimitTunnelProtocolsCandidateCount,
+		"limitTunnelProtocols", constraints.limitTunnelProtocols,
+		"limitTunnelDialPortNumbers", constraints.limitTunnelDialPortNumbers,
 		"replayCandidateCount", constraints.replayCandidateCount,
 		"initialCount", initialCount,
 		"count", count,
@@ -665,6 +666,15 @@ func NoticeClientRegion(region string) {
 	singletonNoticeLogger.outputNotice(
 		"ClientRegion", 0,
 		"region", region)
+}
+
+// NoticeClientAddress is the client's public network address, the IP address
+// and port, as seen by the server and reported to the client in the
+// handshake.
+func NoticeClientAddress(address string) {
+	singletonNoticeLogger.outputNotice(
+		"ClientAddress", 0,
+		"address", address)
 }
 
 // NoticeTunnels is how many active tunnels are available. The client should use this to
@@ -925,9 +935,33 @@ func NoticeServerAlert(alert protocol.AlertRequest) {
 
 // NoticeBursts reports tunnel data transfer burst metrics.
 func NoticeBursts(diagnosticID string, burstMetrics common.LogFields) {
-	singletonNoticeLogger.outputNotice(
-		"Bursts", noticeIsDiagnostic,
-		append([]interface{}{"diagnosticID", diagnosticID}, listCommonFields(burstMetrics)...)...)
+	if GetEmitNetworkParameters() {
+		singletonNoticeLogger.outputNotice(
+			"Bursts", noticeIsDiagnostic,
+			append([]interface{}{"diagnosticID", diagnosticID}, listCommonFields(burstMetrics)...)...)
+	}
+}
+
+// NoticeHoldOffTunnel reports tunnel hold-offs.
+func NoticeHoldOffTunnel(diagnosticID string, duration time.Duration) {
+	if GetEmitNetworkParameters() {
+		singletonNoticeLogger.outputNotice(
+			"HoldOffTunnel", noticeIsDiagnostic,
+			"diagnosticID", diagnosticID,
+			"duration", duration.String())
+	}
+}
+
+// NoticeSkipServerEntry reports a reason for skipping a server entry when
+// preparing dial parameters. To avoid log noise, the server entry
+// diagnosticID is not emitted and each reason is reported at most once per
+// session.
+func NoticeSkipServerEntry(format string, args ...interface{}) {
+	reason := fmt.Sprintf(format, args...)
+	repetitionKey := fmt.Sprintf("ServerAlert-%+v", reason)
+	outputRepetitiveNotice(
+		repetitionKey, "", 0,
+		"SkipServerEntry", 0, "reason", reason)
 }
 
 type repetitiveNoticeState struct {
@@ -1001,14 +1035,21 @@ func GetNotice(notice []byte) (
 	var object noticeObject
 	err = json.Unmarshal(notice, &object)
 	if err != nil {
-		return "", nil, err
+		return "", nil, errors.Trace(err)
 	}
-	var objectPayload interface{}
-	err = json.Unmarshal(object.Data, &objectPayload)
+
+	var data interface{}
+	err = json.Unmarshal(object.Data, &data)
 	if err != nil {
-		return "", nil, err
+		return "", nil, errors.Trace(err)
 	}
-	return object.NoticeType, objectPayload.(map[string]interface{}), nil
+
+	dataValue, ok := data.(map[string]interface{})
+	if !ok {
+		return "", nil, errors.TraceNew("invalid data value")
+	}
+
+	return object.NoticeType, dataValue, nil
 }
 
 // NoticeReceiver consumes a notice input stream and invokes a callback function

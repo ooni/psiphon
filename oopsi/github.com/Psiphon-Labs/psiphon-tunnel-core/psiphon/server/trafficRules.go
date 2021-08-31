@@ -70,8 +70,16 @@ type TrafficRulesSet struct {
 	// any client endpoint request or any request to create a new session, but
 	// not any meek request for an existing session, if the
 	// MeekRateLimiterHistorySize requests occur in
-	// MeekRateLimiterThresholdSeconds. The scope of rate limiting may be
-	// limited using LimitMeekRateLimiterRegions/ISPs/Cities.
+	// MeekRateLimiterThresholdSeconds.
+	//
+	// A use case for the the meek rate limiter is to mitigate dangling resource
+	// usage that results from meek connections that are partially established
+	// and then interrupted (e.g, drop packets after allowing up to the initial
+	// HTTP request and header lines). In the case of CDN fronted meek, the CDN
+	// itself may hold open the interrupted connection.
+	//
+	// The scope of rate limiting may be
+	// limited using LimitMeekRateLimiterTunnelProtocols/Regions/ISPs/Cities.
 	//
 	// Hot reloading a new history size will result in existing history being
 	// truncated.
@@ -80,6 +88,11 @@ type TrafficRulesSet struct {
 	// MeekRateLimiterThresholdSeconds is part of the meek rate limiter
 	// specification and must be set when MeekRateLimiterHistorySize is set.
 	MeekRateLimiterThresholdSeconds int
+
+	// MeekRateLimiterTunnelProtocols, if set, limits application of the meek
+	// late-stage rate limiter to the specified meek protocols. When omitted or
+	// empty, meek rate limiting is applied to all meek protocols.
+	MeekRateLimiterTunnelProtocols []string
 
 	// MeekRateLimiterRegions, if set, limits application of the meek
 	// late-stage rate limiter to clients in the specified list of GeoIP
@@ -223,21 +236,21 @@ type TrafficRules struct {
 
 	// AllowTCPPorts specifies a list of TCP ports that are permitted for port
 	// forwarding. When set, only ports in the list are accessible to clients.
-	AllowTCPPorts []int
+	AllowTCPPorts *common.PortList
 
 	// AllowUDPPorts specifies a list of UDP ports that are permitted for port
 	// forwarding. When set, only ports in the list are accessible to clients.
-	AllowUDPPorts []int
+	AllowUDPPorts *common.PortList
 
 	// DisallowTCPPorts specifies a list of TCP ports that are not permitted for
 	// port forwarding. DisallowTCPPorts takes priority over AllowTCPPorts and
 	// AllowSubnets.
-	DisallowTCPPorts []int
+	DisallowTCPPorts *common.PortList
 
 	// DisallowUDPPorts specifies a list of UDP ports that are not permitted for
 	// port forwarding. DisallowUDPPorts takes priority over AllowUDPPorts and
 	// AllowSubnets.
-	DisallowUDPPorts []int
+	DisallowUDPPorts *common.PortList
 
 	// AllowSubnets specifies a list of IP address subnets for which all TCP and
 	// UDP ports are allowed. This list is consulted if a port is disallowed by
@@ -248,11 +261,6 @@ type TrafficRules struct {
 	// client sends an IP address. Domain names are not resolved before checking
 	// AllowSubnets.
 	AllowSubnets []string
-
-	allowTCPPortsLookup    map[int]bool
-	allowUDPPortsLookup    map[int]bool
-	disallowTCPPortsLookup map[int]bool
-	disallowUDPPortsLookup map[int]bool
 }
 
 // RateLimits is a clone of common.RateLimits with pointers
@@ -266,6 +274,12 @@ type RateLimits struct {
 	WriteBytesPerSecond   *int64
 	CloseAfterExhausted   *bool
 
+	// EstablishmentRead/WriteBytesPerSecond are used in place of
+	// Read/WriteBytesPerSecond for tunnels in the establishment phase, from the
+	// initial network connection up to the completion of the API handshake.
+	EstablishmentReadBytesPerSecond  *int64
+	EstablishmentWriteBytesPerSecond *int64
+
 	// UnthrottleFirstTunnelOnly specifies whether any
 	// ReadUnthrottledBytes/WriteUnthrottledBytes apply
 	// only to the first tunnel in a session.
@@ -273,14 +287,19 @@ type RateLimits struct {
 }
 
 // CommonRateLimits converts a RateLimits to a common.RateLimits.
-func (rateLimits *RateLimits) CommonRateLimits() common.RateLimits {
-	return common.RateLimits{
+func (rateLimits *RateLimits) CommonRateLimits(handshaked bool) common.RateLimits {
+	r := common.RateLimits{
 		ReadUnthrottledBytes:  *rateLimits.ReadUnthrottledBytes,
 		ReadBytesPerSecond:    *rateLimits.ReadBytesPerSecond,
 		WriteUnthrottledBytes: *rateLimits.WriteUnthrottledBytes,
 		WriteBytesPerSecond:   *rateLimits.WriteBytesPerSecond,
 		CloseAfterExhausted:   *rateLimits.CloseAfterExhausted,
 	}
+	if !handshaked {
+		r.ReadBytesPerSecond = *rateLimits.EstablishmentReadBytesPerSecond
+		r.WriteBytesPerSecond = *rateLimits.EstablishmentWriteBytesPerSecond
+	}
+	return r
 }
 
 // NewTrafficRulesSet initializes a TrafficRulesSet with
@@ -306,6 +325,7 @@ func NewTrafficRulesSet(filename string) (*TrafficRulesSet, error) {
 			// Modify actual traffic rules only after validation
 			set.MeekRateLimiterHistorySize = newSet.MeekRateLimiterHistorySize
 			set.MeekRateLimiterThresholdSeconds = newSet.MeekRateLimiterThresholdSeconds
+			set.MeekRateLimiterTunnelProtocols = newSet.MeekRateLimiterTunnelProtocols
 			set.MeekRateLimiterRegions = newSet.MeekRateLimiterRegions
 			set.MeekRateLimiterISPs = newSet.MeekRateLimiterISPs
 			set.MeekRateLimiterCities = newSet.MeekRateLimiterCities
@@ -349,6 +369,8 @@ func (set *TrafficRulesSet) Validate() error {
 			(rules.RateLimits.ReadBytesPerSecond != nil && *rules.RateLimits.ReadBytesPerSecond < 0) ||
 			(rules.RateLimits.WriteUnthrottledBytes != nil && *rules.RateLimits.WriteUnthrottledBytes < 0) ||
 			(rules.RateLimits.WriteBytesPerSecond != nil && *rules.RateLimits.WriteBytesPerSecond < 0) ||
+			(rules.RateLimits.EstablishmentReadBytesPerSecond != nil && *rules.RateLimits.EstablishmentReadBytesPerSecond < 0) ||
+			(rules.RateLimits.EstablishmentWriteBytesPerSecond != nil && *rules.RateLimits.EstablishmentWriteBytesPerSecond < 0) ||
 			(rules.DialTCPPortForwardTimeoutMilliseconds != nil && *rules.DialTCPPortForwardTimeoutMilliseconds < 0) ||
 			(rules.IdleTCPPortForwardTimeoutMilliseconds != nil && *rules.IdleTCPPortForwardTimeoutMilliseconds < 0) ||
 			(rules.IdleUDPPortForwardTimeoutMilliseconds != nil && *rules.IdleUDPPortForwardTimeoutMilliseconds < 0) ||
@@ -407,33 +429,11 @@ func (set *TrafficRulesSet) initLookups() {
 
 	initTrafficRulesLookups := func(rules *TrafficRules) {
 
-		if len(rules.AllowTCPPorts) >= intLookupThreshold {
-			rules.allowTCPPortsLookup = make(map[int]bool)
-			for _, port := range rules.AllowTCPPorts {
-				rules.allowTCPPortsLookup[port] = true
-			}
-		}
+		rules.AllowTCPPorts.OptimizeLookups()
+		rules.AllowUDPPorts.OptimizeLookups()
+		rules.DisallowTCPPorts.OptimizeLookups()
+		rules.DisallowUDPPorts.OptimizeLookups()
 
-		if len(rules.AllowUDPPorts) >= intLookupThreshold {
-			rules.allowUDPPortsLookup = make(map[int]bool)
-			for _, port := range rules.AllowUDPPorts {
-				rules.allowUDPPortsLookup[port] = true
-			}
-		}
-
-		if len(rules.DisallowTCPPorts) >= intLookupThreshold {
-			rules.disallowTCPPortsLookup = make(map[int]bool)
-			for _, port := range rules.DisallowTCPPorts {
-				rules.disallowTCPPortsLookup[port] = true
-			}
-		}
-
-		if len(rules.DisallowUDPPorts) >= intLookupThreshold {
-			rules.disallowUDPPortsLookup = make(map[int]bool)
-			for _, port := range rules.DisallowUDPPorts {
-				rules.disallowUDPPortsLookup[port] = true
-			}
-		}
 	}
 
 	initTrafficRulesFilterLookups := func(filter *TrafficRulesFilter) {
@@ -527,6 +527,14 @@ func (set *TrafficRulesSet) GetTrafficRules(
 		trafficRules.RateLimits.CloseAfterExhausted = new(bool)
 	}
 
+	if trafficRules.RateLimits.EstablishmentReadBytesPerSecond == nil {
+		trafficRules.RateLimits.EstablishmentReadBytesPerSecond = new(int64)
+	}
+
+	if trafficRules.RateLimits.EstablishmentWriteBytesPerSecond == nil {
+		trafficRules.RateLimits.EstablishmentWriteBytesPerSecond = new(int64)
+	}
+
 	if trafficRules.RateLimits.UnthrottleFirstTunnelOnly == nil {
 		trafficRules.RateLimits.UnthrottleFirstTunnelOnly = new(bool)
 	}
@@ -563,14 +571,6 @@ func (set *TrafficRulesSet) GetTrafficRules(
 	if trafficRules.MaxUDPPortForwardCount == nil {
 		trafficRules.MaxUDPPortForwardCount =
 			intPtr(DEFAULT_MAX_UDP_PORT_FORWARD_COUNT)
-	}
-
-	if trafficRules.AllowTCPPorts == nil {
-		trafficRules.AllowTCPPorts = make([]int, 0)
-	}
-
-	if trafficRules.AllowUDPPorts == nil {
-		trafficRules.AllowUDPPorts = make([]int, 0)
 	}
 
 	if trafficRules.AllowSubnets == nil {
@@ -727,6 +727,14 @@ func (set *TrafficRulesSet) GetTrafficRules(
 			trafficRules.RateLimits.CloseAfterExhausted = filteredRules.Rules.RateLimits.CloseAfterExhausted
 		}
 
+		if filteredRules.Rules.RateLimits.EstablishmentReadBytesPerSecond != nil {
+			trafficRules.RateLimits.EstablishmentReadBytesPerSecond = filteredRules.Rules.RateLimits.EstablishmentReadBytesPerSecond
+		}
+
+		if filteredRules.Rules.RateLimits.EstablishmentWriteBytesPerSecond != nil {
+			trafficRules.RateLimits.EstablishmentWriteBytesPerSecond = filteredRules.Rules.RateLimits.EstablishmentWriteBytesPerSecond
+		}
+
 		if filteredRules.Rules.RateLimits.UnthrottleFirstTunnelOnly != nil {
 			trafficRules.RateLimits.UnthrottleFirstTunnelOnly = filteredRules.Rules.RateLimits.UnthrottleFirstTunnelOnly
 		}
@@ -757,22 +765,18 @@ func (set *TrafficRulesSet) GetTrafficRules(
 
 		if filteredRules.Rules.AllowTCPPorts != nil {
 			trafficRules.AllowTCPPorts = filteredRules.Rules.AllowTCPPorts
-			trafficRules.allowTCPPortsLookup = filteredRules.Rules.allowTCPPortsLookup
 		}
 
 		if filteredRules.Rules.AllowUDPPorts != nil {
 			trafficRules.AllowUDPPorts = filteredRules.Rules.AllowUDPPorts
-			trafficRules.allowUDPPortsLookup = filteredRules.Rules.allowUDPPortsLookup
 		}
 
 		if filteredRules.Rules.DisallowTCPPorts != nil {
 			trafficRules.DisallowTCPPorts = filteredRules.Rules.DisallowTCPPorts
-			trafficRules.disallowTCPPortsLookup = filteredRules.Rules.disallowTCPPortsLookup
 		}
 
 		if filteredRules.Rules.DisallowUDPPorts != nil {
 			trafficRules.DisallowUDPPorts = filteredRules.Rules.DisallowUDPPorts
-			trafficRules.disallowUDPPortsLookup = filteredRules.Rules.disallowUDPPortsLookup
 		}
 
 		if filteredRules.Rules.AllowSubnets != nil {
@@ -794,34 +798,16 @@ func (set *TrafficRulesSet) GetTrafficRules(
 
 func (rules *TrafficRules) AllowTCPPort(remoteIP net.IP, port int) bool {
 
-	if len(rules.DisallowTCPPorts) > 0 {
-		if rules.disallowTCPPortsLookup != nil {
-			if rules.disallowTCPPortsLookup[port] {
-				return false
-			}
-		} else {
-			for _, disallowPort := range rules.DisallowTCPPorts {
-				if port == disallowPort {
-					return false
-				}
-			}
-		}
+	if rules.DisallowTCPPorts.Lookup(port) {
+		return false
 	}
 
-	if len(rules.AllowTCPPorts) == 0 {
+	if rules.AllowTCPPorts.IsEmpty() {
 		return true
 	}
 
-	if rules.allowTCPPortsLookup != nil {
-		if rules.allowTCPPortsLookup[port] {
-			return true
-		}
-	} else {
-		for _, allowPort := range rules.AllowTCPPorts {
-			if port == allowPort {
-				return true
-			}
-		}
+	if rules.AllowTCPPorts.Lookup(port) {
+		return true
 	}
 
 	return rules.allowSubnet(remoteIP)
@@ -829,34 +815,16 @@ func (rules *TrafficRules) AllowTCPPort(remoteIP net.IP, port int) bool {
 
 func (rules *TrafficRules) AllowUDPPort(remoteIP net.IP, port int) bool {
 
-	if len(rules.DisallowUDPPorts) > 0 {
-		if rules.disallowUDPPortsLookup != nil {
-			if rules.disallowUDPPortsLookup[port] {
-				return false
-			}
-		} else {
-			for _, disallowPort := range rules.DisallowUDPPorts {
-				if port == disallowPort {
-					return false
-				}
-			}
-		}
+	if rules.DisallowUDPPorts.Lookup(port) {
+		return false
 	}
 
-	if len(rules.AllowUDPPorts) == 0 {
+	if rules.AllowUDPPorts.IsEmpty() {
 		return true
 	}
 
-	if rules.allowUDPPortsLookup != nil {
-		if rules.allowUDPPortsLookup[port] {
-			return true
-		}
-	} else {
-		for _, allowPort := range rules.AllowUDPPorts {
-			if port == allowPort {
-				return true
-			}
-		}
+	if rules.AllowUDPPorts.Lookup(port) {
+		return true
 	}
 
 	return rules.allowSubnet(remoteIP)
@@ -877,7 +845,8 @@ func (rules *TrafficRules) allowSubnet(remoteIP net.IP) bool {
 
 // GetMeekRateLimiterConfig gets a snapshot of the meek rate limiter
 // configuration values.
-func (set *TrafficRulesSet) GetMeekRateLimiterConfig() (int, int, []string, []string, []string, int, int) {
+func (set *TrafficRulesSet) GetMeekRateLimiterConfig() (
+	int, int, []string, []string, []string, []string, int, int) {
 
 	set.ReloadableFile.RLock()
 	defer set.ReloadableFile.RUnlock()
@@ -895,6 +864,7 @@ func (set *TrafficRulesSet) GetMeekRateLimiterConfig() (int, int, []string, []st
 
 	return set.MeekRateLimiterHistorySize,
 		set.MeekRateLimiterThresholdSeconds,
+		set.MeekRateLimiterTunnelProtocols,
 		set.MeekRateLimiterRegions,
 		set.MeekRateLimiterISPs,
 		set.MeekRateLimiterCities,

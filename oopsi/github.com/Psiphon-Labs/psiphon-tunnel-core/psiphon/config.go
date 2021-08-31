@@ -437,6 +437,10 @@ type Config struct {
 	// EmitServerAlerts indicates whether to emit notices for server alerts.
 	EmitServerAlerts bool
 
+	// EmitClientAddress indicates whether to emit the client's public network
+	// address, IP and port, as seen by the server.
+	EmitClientAddress bool
+
 	// RateLimits specify throttling configuration for the tunnel.
 	RateLimits common.RateLimits
 
@@ -730,6 +734,25 @@ type Config struct {
 	ConjureDecoyRegistrarWidth                *int
 	ConjureDecoyRegistrarMinDelayMilliseconds *int
 	ConjureDecoyRegistrarMaxDelayMilliseconds *int
+
+	// HoldOffTunnelMinDurationMilliseconds and other HoldOffTunnel fields are
+	// for testing purposes.
+	HoldOffTunnelMinDurationMilliseconds *int
+	HoldOffTunnelMaxDurationMilliseconds *int
+	HoldOffTunnelProtocols               []string
+	HoldOffTunnelFrontingProviderIDs     []string
+	HoldOffTunnelProbability             *float64
+
+	// RestrictFrontingProviderIDs and other RestrictFrontingProviderIDs fields
+	// are for testing purposes.
+	RestrictFrontingProviderIDs                  []string
+	RestrictFrontingProviderIDsClientProbability *float64
+
+	// UpstreamProxyAllowAllServerEntrySources is for testing purposes.
+	UpstreamProxyAllowAllServerEntrySources *bool
+
+	// LimitTunnelDialPortNumbers is for testing purposes.
+	LimitTunnelDialPortNumbers parameters.TunnelProtocolPortLists
 
 	// params is the active parameters.Parameters with defaults, config values,
 	// and, optionally, tactics applied.
@@ -1584,7 +1607,7 @@ func (config *Config) makeConfigParameters() map[string]interface{} {
 		applyParameters[parameters.UseOnlyCustomTLSProfiles] = *config.UseOnlyCustomTLSProfiles
 	}
 
-	if config.CustomTLSProfiles != nil {
+	if len(config.CustomTLSProfiles) > 0 {
 		applyParameters[parameters.CustomTLSProfiles] = config.CustomTLSProfiles
 	}
 
@@ -1596,7 +1619,7 @@ func (config *Config) makeConfigParameters() map[string]interface{} {
 		applyParameters[parameters.NoDefaultTLSSessionIDProbability] = *config.NoDefaultTLSSessionIDProbability
 	}
 
-	if config.DisableFrontingProviderTLSProfiles != nil {
+	if len(config.DisableFrontingProviderTLSProfiles) > 0 {
 		applyParameters[parameters.DisableFrontingProviderTLSProfiles] = config.DisableFrontingProviderTLSProfiles
 	}
 
@@ -1640,7 +1663,7 @@ func (config *Config) makeConfigParameters() map[string]interface{} {
 		applyParameters[parameters.ConjureAPIRegistrarURL] = config.ConjureAPIRegistrarURL
 	}
 
-	if config.ConjureAPIRegistrarFrontingSpecs != nil {
+	if len(config.ConjureAPIRegistrarFrontingSpecs) > 0 {
 		applyParameters[parameters.ConjureAPIRegistrarFrontingSpecs] = config.ConjureAPIRegistrarFrontingSpecs
 	}
 
@@ -1666,6 +1689,42 @@ func (config *Config) makeConfigParameters() map[string]interface{} {
 
 	if config.ConjureDecoyRegistrarMaxDelayMilliseconds != nil {
 		applyParameters[parameters.ConjureDecoyRegistrarMaxDelay] = fmt.Sprintf("%dms", *config.ConjureDecoyRegistrarMaxDelayMilliseconds)
+	}
+
+	if config.HoldOffTunnelMinDurationMilliseconds != nil {
+		applyParameters[parameters.HoldOffTunnelMinDuration] = fmt.Sprintf("%dms", *config.HoldOffTunnelMinDurationMilliseconds)
+	}
+
+	if config.HoldOffTunnelMaxDurationMilliseconds != nil {
+		applyParameters[parameters.HoldOffTunnelMaxDuration] = fmt.Sprintf("%dms", *config.HoldOffTunnelMaxDurationMilliseconds)
+	}
+
+	if len(config.HoldOffTunnelProtocols) > 0 {
+		applyParameters[parameters.HoldOffTunnelProtocols] = protocol.TunnelProtocols(config.HoldOffTunnelProtocols)
+	}
+
+	if len(config.HoldOffTunnelFrontingProviderIDs) > 0 {
+		applyParameters[parameters.HoldOffTunnelFrontingProviderIDs] = config.HoldOffTunnelFrontingProviderIDs
+	}
+
+	if config.HoldOffTunnelProbability != nil {
+		applyParameters[parameters.HoldOffTunnelProbability] = *config.HoldOffTunnelProbability
+	}
+
+	if len(config.RestrictFrontingProviderIDs) > 0 {
+		applyParameters[parameters.RestrictFrontingProviderIDs] = config.RestrictFrontingProviderIDs
+	}
+
+	if config.RestrictFrontingProviderIDsClientProbability != nil {
+		applyParameters[parameters.RestrictFrontingProviderIDsClientProbability] = *config.RestrictFrontingProviderIDsClientProbability
+	}
+
+	if config.UpstreamProxyAllowAllServerEntrySources != nil {
+		applyParameters[parameters.UpstreamProxyAllowAllServerEntrySources] = *config.UpstreamProxyAllowAllServerEntrySources
+	}
+
+	if len(config.LimitTunnelDialPortNumbers) > 0 {
+		applyParameters[parameters.LimitTunnelDialPortNumbers] = config.LimitTunnelDialPortNumbers
 	}
 
 	// When adding new config dial parameters that may override tactics, also
@@ -1877,7 +1936,7 @@ func (config *Config) setDialParametersHash() {
 		binary.Write(hash, binary.LittleEndian, *config.NoDefaultTLSSessionIDProbability)
 	}
 
-	if config.DisableFrontingProviderTLSProfiles != nil {
+	if len(config.DisableFrontingProviderTLSProfiles) > 0 {
 		hash.Write([]byte("DisableFrontingProviderTLSProfiles"))
 		encodedDisableFrontingProviderTLSProfiles, _ :=
 			json.Marshal(config.DisableFrontingProviderTLSProfiles)
@@ -1944,6 +2003,59 @@ func (config *Config) setDialParametersHash() {
 	if config.ConjureDecoyRegistrarMaxDelayMilliseconds != nil {
 		hash.Write([]byte("ConjureDecoyRegistrarMaxDelayMilliseconds"))
 		binary.Write(hash, binary.LittleEndian, int64(*config.ConjureDecoyRegistrarMaxDelayMilliseconds))
+	}
+
+	if config.HoldOffTunnelMinDurationMilliseconds != nil {
+		hash.Write([]byte("HoldOffTunnelMinDurationMilliseconds"))
+		binary.Write(hash, binary.LittleEndian, int64(*config.HoldOffTunnelMinDurationMilliseconds))
+	}
+
+	if config.HoldOffTunnelMaxDurationMilliseconds != nil {
+		hash.Write([]byte("HoldOffTunnelMaxDurationMilliseconds"))
+		binary.Write(hash, binary.LittleEndian, int64(*config.HoldOffTunnelMaxDurationMilliseconds))
+	}
+
+	if len(config.HoldOffTunnelProtocols) > 0 {
+		hash.Write([]byte("HoldOffTunnelProtocols"))
+		for _, protocol := range config.HoldOffTunnelProtocols {
+			hash.Write([]byte(protocol))
+		}
+	}
+
+	if len(config.HoldOffTunnelFrontingProviderIDs) > 0 {
+		hash.Write([]byte("HoldOffTunnelFrontingProviderIDs"))
+		for _, providerID := range config.HoldOffTunnelFrontingProviderIDs {
+			hash.Write([]byte(providerID))
+		}
+	}
+
+	if config.HoldOffTunnelProbability != nil {
+		hash.Write([]byte("HoldOffTunnelProbability"))
+		binary.Write(hash, binary.LittleEndian, *config.HoldOffTunnelProbability)
+	}
+
+	if len(config.RestrictFrontingProviderIDs) > 0 {
+		hash.Write([]byte("RestrictFrontingProviderIDs"))
+		for _, providerID := range config.RestrictFrontingProviderIDs {
+			hash.Write([]byte(providerID))
+		}
+	}
+
+	if config.RestrictFrontingProviderIDsClientProbability != nil {
+		hash.Write([]byte("RestrictFrontingProviderIDsClientProbability"))
+		binary.Write(hash, binary.LittleEndian, *config.RestrictFrontingProviderIDsClientProbability)
+	}
+
+	if config.UpstreamProxyAllowAllServerEntrySources != nil {
+		hash.Write([]byte("UpstreamProxyAllowAllServerEntrySources"))
+		binary.Write(hash, binary.LittleEndian, *config.UpstreamProxyAllowAllServerEntrySources)
+	}
+
+	if len(config.LimitTunnelDialPortNumbers) > 0 {
+		hash.Write([]byte("LimitTunnelDialPortNumbers"))
+		encodedLimitTunnelDialPortNumbers, _ :=
+			json.Marshal(config.LimitTunnelDialPortNumbers)
+		hash.Write(encodedLimitTunnelDialPortNumbers)
 	}
 
 	config.dialParametersHash = hash.Sum(nil)

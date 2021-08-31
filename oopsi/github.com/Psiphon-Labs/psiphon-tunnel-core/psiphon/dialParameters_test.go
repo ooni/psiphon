@@ -76,10 +76,18 @@ func runDialParametersAndReplay(t *testing.T, tunnelProtocol string) {
 		t.Fatalf("error committing configuration file: %s", err)
 	}
 
+	holdOffTunnelProtocols := protocol.TunnelProtocols{protocol.TUNNEL_PROTOCOL_OBFUSCATED_SSH}
+	frontingProviderID := prng.HexString(8)
+
 	applyParameters := make(map[string]interface{})
 	applyParameters[parameters.TransformHostNameProbability] = 1.0
 	applyParameters[parameters.PickUserAgentProbability] = 1.0
-	err = clientConfig.SetParameters("tag1", true, applyParameters)
+	applyParameters[parameters.HoldOffTunnelMinDuration] = "1ms"
+	applyParameters[parameters.HoldOffTunnelMaxDuration] = "10ms"
+	applyParameters[parameters.HoldOffTunnelProtocols] = holdOffTunnelProtocols
+	applyParameters[parameters.HoldOffTunnelFrontingProviderIDs] = []string{frontingProviderID}
+	applyParameters[parameters.HoldOffTunnelProbability] = 1.0
+	err = clientConfig.SetParameters("tag1", false, applyParameters)
 	if err != nil {
 		t.Fatalf("SetParameters failed: %s", err)
 	}
@@ -90,7 +98,7 @@ func runDialParametersAndReplay(t *testing.T, tunnelProtocol string) {
 	}
 	defer CloseDataStore()
 
-	serverEntries := makeMockServerEntries(tunnelProtocol, 100)
+	serverEntries := makeMockServerEntries(tunnelProtocol, frontingProviderID, 100)
 
 	canReplay := func(serverEntry *protocol.ServerEntry, replayProtocol string) bool {
 		return replayProtocol == tunnelProtocol
@@ -202,6 +210,18 @@ func runDialParametersAndReplay(t *testing.T, tunnelProtocol string) {
 
 	if dialParams.APIRequestPaddingSeed == nil {
 		t.Fatalf("missing API request fields")
+	}
+
+	if common.Contains(holdOffTunnelProtocols, tunnelProtocol) ||
+		protocol.TunnelProtocolUsesFrontedMeek(tunnelProtocol) {
+		if dialParams.HoldOffTunnelDuration < 1*time.Millisecond ||
+			dialParams.HoldOffTunnelDuration > 10*time.Millisecond {
+			t.Fatalf("unexpected hold-off duration: %v", dialParams.HoldOffTunnelDuration)
+		}
+	} else {
+		if dialParams.HoldOffTunnelDuration != 0 {
+			t.Fatalf("unexpected hold-off duration: %v", dialParams.HoldOffTunnelDuration)
+		}
 	}
 
 	dialConfig := dialParams.GetDialConfig()
@@ -326,7 +346,7 @@ func runDialParametersAndReplay(t *testing.T, tunnelProtocol string) {
 	// Test: no replay after change tactics
 
 	applyParameters[parameters.ReplayDialParametersTTL] = "1s"
-	err = clientConfig.SetParameters("tag2", true, applyParameters)
+	err = clientConfig.SetParameters("tag2", false, applyParameters)
 	if err != nil {
 		t.Fatalf("SetParameters failed: %s", err)
 	}
@@ -380,7 +400,7 @@ func runDialParametersAndReplay(t *testing.T, tunnelProtocol string) {
 	applyParameters[parameters.ReplayObfuscatedQUIC] = false
 	applyParameters[parameters.ReplayLivenessTest] = false
 	applyParameters[parameters.ReplayAPIRequestPadding] = false
-	err = clientConfig.SetParameters("tag3", true, applyParameters)
+	err = clientConfig.SetParameters("tag3", false, applyParameters)
 	if err != nil {
 		t.Fatalf("SetParameters failed: %s", err)
 	}
@@ -416,6 +436,35 @@ func runDialParametersAndReplay(t *testing.T, tunnelProtocol string) {
 		identicalSeeds(replayDialParams.LivenessTestSeed, dialParams.LivenessTestSeed) ||
 		identicalSeeds(replayDialParams.APIRequestPaddingSeed, dialParams.APIRequestPaddingSeed) {
 		t.Fatalf("unexpected replayed fields")
+	}
+
+	// Test: client-side restrict fronting provider ID
+
+	applyParameters[parameters.RestrictFrontingProviderIDs] = []string{frontingProviderID}
+	applyParameters[parameters.RestrictFrontingProviderIDsClientProbability] = 1.0
+	err = clientConfig.SetParameters("tag4", false, applyParameters)
+	if err != nil {
+		t.Fatalf("SetParameters failed: %s", err)
+	}
+
+	dialParams, err = MakeDialParameters(clientConfig, nil, canReplay, selectProtocol, serverEntries[0], false, 0, 0)
+
+	if protocol.TunnelProtocolUsesFrontedMeek(tunnelProtocol) {
+		if err == nil {
+			if dialParams != nil {
+				t.Fatalf("unexpected MakeDialParameters success")
+			}
+		}
+	} else {
+		if err != nil {
+			t.Fatalf("MakeDialParameters failed: %s", err)
+		}
+	}
+
+	applyParameters[parameters.RestrictFrontingProviderIDsClientProbability] = 0.0
+	err = clientConfig.SetParameters("tag5", false, applyParameters)
+	if err != nil {
+		t.Fatalf("SetParameters failed: %s", err)
 	}
 
 	// Test: iterator shuffles
@@ -509,23 +558,132 @@ func runDialParametersAndReplay(t *testing.T, tunnelProtocol string) {
 	}
 }
 
-func makeMockServerEntries(tunnelProtocol string, count int) []*protocol.ServerEntry {
+func TestLimitTunnelDialPortNumbers(t *testing.T) {
+
+	testDataDirName, err := ioutil.TempDir("", "psiphon-limit-tunnel-dial-port-numbers-test")
+	if err != nil {
+		t.Fatalf("TempDir failed: %s", err)
+	}
+	defer os.RemoveAll(testDataDirName)
+
+	SetNoticeWriter(ioutil.Discard)
+
+	clientConfig := &Config{
+		PropagationChannelId: "0",
+		SponsorId:            "0",
+		DataRootDirectory:    testDataDirName,
+		NetworkIDGetter:      new(testNetworkGetter),
+	}
+
+	err = clientConfig.Commit(false)
+	if err != nil {
+		t.Fatalf("error committing configuration file: %s", err)
+	}
+
+	jsonLimitDialPortNumbers := `
+    {
+        "SSH" : [[10,11]],
+        "OSSH" : [[20,21]],
+        "QUIC-OSSH" : [[30,31]],
+        "TAPDANCE-OSSH" : [[40,41]],
+        "CONJURE-OSSH" : [[50,51]],
+        "All" : [[60,61],80,443]
+    }
+    `
+
+	var limitTunnelDialPortNumbers parameters.TunnelProtocolPortLists
+	err = json.Unmarshal([]byte(jsonLimitDialPortNumbers), &limitTunnelDialPortNumbers)
+	if err != nil {
+		t.Fatalf("Unmarshal failed: %s", err)
+	}
+
+	applyParameters := make(map[string]interface{})
+	applyParameters[parameters.LimitTunnelDialPortNumbers] = limitTunnelDialPortNumbers
+	applyParameters[parameters.LimitTunnelDialPortNumbersProbability] = 1.0
+	err = clientConfig.SetParameters("tag1", false, applyParameters)
+	if err != nil {
+		t.Fatalf("SetParameters failed: %s", err)
+	}
+
+	constraints := &protocolSelectionConstraints{
+		limitTunnelDialPortNumbers: protocol.TunnelProtocolPortLists(
+			clientConfig.GetParameters().Get().TunnelProtocolPortLists(parameters.LimitTunnelDialPortNumbers)),
+	}
+
+	selectProtocol := func(serverEntry *protocol.ServerEntry) (string, bool) {
+		return constraints.selectProtocol(0, false, serverEntry)
+	}
+
+	for _, tunnelProtocol := range protocol.SupportedTunnelProtocols {
+
+		if common.Contains(protocol.DefaultDisabledTunnelProtocols, tunnelProtocol) {
+			continue
+		}
+
+		serverEntries := makeMockServerEntries(tunnelProtocol, "", 100)
+
+		selected := false
+		skipped := false
+
+		for _, serverEntry := range serverEntries {
+
+			selectedProtocol, ok := selectProtocol(serverEntry)
+
+			if ok {
+
+				if selectedProtocol != tunnelProtocol {
+					t.Fatalf("unexpected selected protocol: %s", selectedProtocol)
+				}
+
+				port, err := serverEntry.GetDialPortNumber(selectedProtocol)
+				if err != nil {
+					t.Fatalf("GetDialPortNumber failed: %s", err)
+				}
+
+				if port%10 != 0 && port%10 != 1 && !protocol.TunnelProtocolUsesFrontedMeek(selectedProtocol) {
+					t.Fatalf("unexpected dial port number: %d", port)
+				}
+
+				selected = true
+
+			} else {
+
+				skipped = true
+			}
+		}
+
+		if !selected {
+			t.Fatalf("expected at least one selected server entry: %s", tunnelProtocol)
+		}
+
+		if !skipped && !protocol.TunnelProtocolUsesFrontedMeek(tunnelProtocol) {
+			t.Fatalf("expected at least one skipped server entry: %s", tunnelProtocol)
+		}
+	}
+}
+
+func makeMockServerEntries(
+	tunnelProtocol string,
+	frontingProviderID string,
+	count int) []*protocol.ServerEntry {
 
 	serverEntries := make([]*protocol.ServerEntry, count)
 
 	for i := 0; i < count; i++ {
 		serverEntries[i] = &protocol.ServerEntry{
 			IpAddress:                  fmt.Sprintf("192.168.0.%d", i),
-			SshPort:                    1,
-			SshObfuscatedPort:          2,
-			SshObfuscatedQUICPort:      3,
-			SshObfuscatedTapDancePort:  4,
-			SshObfuscatedConjurePort:   5,
-			MeekServerPort:             6,
+			SshPort:                    prng.Range(10, 19),
+			SshObfuscatedPort:          prng.Range(20, 29),
+			SshObfuscatedQUICPort:      prng.Range(30, 39),
+			SshObfuscatedTapDancePort:  prng.Range(40, 49),
+			SshObfuscatedConjurePort:   prng.Range(50, 59),
+			MeekServerPort:             prng.Range(60, 69),
 			MeekFrontingHosts:          []string{"www1.example.org", "www2.example.org", "www3.example.org"},
 			MeekFrontingAddressesRegex: "[a-z0-9]{1,64}.example.org",
+			FrontingProviderID:         frontingProviderID,
 			LocalSource:                protocol.SERVER_ENTRY_SOURCE_EMBEDDED,
 			LocalTimestamp:             common.TruncateTimestampToHour(common.GetCurrentTimestamp()),
+			Capabilities:               []string{protocol.GetCapability(tunnelProtocol)},
 		}
 	}
 
