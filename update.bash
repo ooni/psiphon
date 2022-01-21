@@ -2,63 +2,34 @@
 set -ex
 basedir=$(cd $(dirname $0) && pwd -P)
 
-oope=github.com/ooni/psiphon
-psirootdir=oopsi
-psidir=$psirootdir/github.com/Psiphon-Labs/psiphon-tunnel-core
-psitempdir=psi.temp
+rm -rf tunnel-core
+mkdir -p tunnel-core
+git clone -b staging-client https://github.com/Psiphon-Labs/psiphon-tunnel-core tunnel-core
 
-rm -rf $psirootdir $psitempdir
-mkdir -p $psirootdir
-git clone -b staging-client https://github.com/Psiphon-Labs/psiphon-tunnel-core $psitempdir
+cd tunnel-core
 
-cd $psitempdir
-
-# Remove all go modules because we're vendoring sources
-for file in go.mod go.sum; do
-  find . -type f -name $file -exec rm -f {} \;
+# As of 2021-01-21, it seems doable to import most Psiphon dependencies directly,
+# except for the ones in github.com/Psiphon-Labs. Those seem to have a circular
+# dependencies between them and some data structures in the core repository.
+mkdir oovendor
+for dir in $(cd vendor/github.com/Psiphon-Labs && ls); do
+	mv vendor/github.com/Psiphon-Labs/$dir oovendor/$dir
+	for file in $(find . -type f -name \*.go); do
+		cat $file | sed "s|Psiphon-Labs/$dir|ooni/psiphon/tunnel-core/oovendor/$dir|g" >$file.tmp
+		mv $file.tmp $file
+	done
 done
+find oovendor -type f -name go.mod -exec rm {} \;
+find oovendor -type f -name go.sum -exec rm {} \;
 
-# Move all vendored dependencies at toplevel
-for dir in $(find vendor -type d -maxdepth 1 -mindepth 1); do
-  mv $dir $basedir/$psirootdir/$(basename $dir)
-done
-
-# Record the version of psiphon-tunnel-core we're using
-git describe --tags > $basedir/$psirootdir/ooversion.txt
-
-# We are using another git repository
-rm -rf vendor .git
-
-# Also move psiphon-tunnel-core sources in the right place
-cd ..
-mv $psitempdir $basedir/$psidir
-
-cd $basedir/$psirootdir
-
-# Rewrite all the imports so the dependencies used by Psiphon have a
-# specific import path that does not conflict with OONI's deps.
 for file in $(find . -type f -name \*.go); do
-  cat $file | sed -e "s@github.com/@$oope/$psirootdir/github.com/@g"   \
-                  -e "s@go.uber.org/@$oope/$psirootdir/go.uber.org/@g" \
-                  -e "s@golang.org/@$oope/$psirootdir/golang.org/@g"   > $file.new
-  mv $file.new $file
+	cat $file | sed 's|Psiphon-Labs/psiphon-tunnel-core|ooni/psiphon/tunnel-core|g' >$file.tmp
+	mv $file.tmp $file
 done
 
-# Quirk: we need to disable QUIC when using Go 1.14 because there is conflict
-# between the qtls version vendored by Psiphon and Go 1.15 stdlib.
-for file in $(git grep PSIPHON_DISABLE_QUIC|awk -F: '{print $1}'|sort -u); do
-  cat $file | sed -e "s@PSIPHON_DISABLE_QUIC@go1.15@g" > $file.new
-  mv $file.new $file
-done
-
-# Quirk: we want to use a more recent version of creack/goselect that
-# supports MIPS (https://github.com/ooni/probe-engine/pull/313). It may
-# be a good idea to submit a PR to Psiphon to fix this issue.
-for file in $(git grep creack/goselect|awk -F: '{print $1}'|sort -u); do
-  cat $file | \
-    sed -e "s@$oope/$psirootdir/github.com/creack/goselect@github.com/creack/goselect@g" \
-      > $file.new
-  mv $file.new $file
-done
-
+go mod init github.com/ooni/psiphon/tunnel-core
 go mod tidy
+
+git describe --tags > VERSION
+
+rm -rf vendor .git
