@@ -1,6 +1,6 @@
 module github.com/ooni/psiphon/tunnel-core
 
-go 1.17
+go 1.18
 
 require (
 	github.com/Psiphon-Inc/rotate-safe-writer v0.0.0-20210303140923-464a7a37606e
