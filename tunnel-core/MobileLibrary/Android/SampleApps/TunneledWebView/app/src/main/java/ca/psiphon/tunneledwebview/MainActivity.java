@@ -265,11 +265,6 @@ public class MainActivity extends AppCompatActivity
     }
 
     @Override
-    public void onSplitTunnelRegion(String region) {
-        logMessage("split tunnel region: " + region);
-    }
-
-    @Override
     public void onUntunneledAddress(String address) {
         logMessage("untunneled address: " + address);
     }
@@ -303,6 +298,11 @@ public class MainActivity extends AppCompatActivity
     @Override
     public void onClientRegion(String region) {
         logMessage("client region: " + region);
+    }
+
+    @Override
+    public void onClientAddress(String address) {
+        logMessage("client address: " + address);
     }
 
     private static String readInputStreamToString(InputStream inputStream) throws IOException {

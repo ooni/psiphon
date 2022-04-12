@@ -23,5 +23,5 @@ package quic
 //go:generate sh -c "./mockgen_private.sh quic mock_packet_handler_manager_test.go github.com/ooni/psiphon/tunnel-core/oovendor/quic-go packetHandlerManager"
 //go:generate sh -c "./mockgen_private.sh quic mock_multiplexer_test.go github.com/ooni/psiphon/tunnel-core/oovendor/quic-go multiplexer"
 //go:generate sh -c "./mockgen_private.sh quic mock_batch_conn_test.go github.com/ooni/psiphon/tunnel-core/oovendor/quic-go batchConn"
-//go:generate sh -c "mockgen -package quic -self_package github.com/ooni/psiphon/tunnel-core/oovendor/quic-go -destination mock_token_store_test.go github.com/ooni/psiphon/tunnel-core/oovendor/quic-go TokenStore && goimports -w mock_token_store_test.go"
-//go:generate sh -c "mockgen -package quic -self_package github.com/ooni/psiphon/tunnel-core/oovendor/quic-go -destination mock_packetconn_test.go net PacketConn && goimports -w mock_packetconn_test.go"
+//go:generate sh -c "mockgen -package quic -self_package github.com/ooni/psiphon/tunnel-core/oovendor/quic-go -destination mock_token_store_test.go github.com/ooni/psiphon/tunnel-core/oovendor/quic-go TokenStore"
+//go:generate sh -c "mockgen -package quic -self_package github.com/ooni/psiphon/tunnel-core/oovendor/quic-go -destination mock_packetconn_test.go net PacketConn"
