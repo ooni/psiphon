@@ -21,6 +21,7 @@ package psiphon
 
 import (
 	"bytes"
+	"context"
 	"crypto/md5"
 	"encoding/binary"
 	"net"
@@ -36,6 +37,7 @@ import (
 	"github.com/ooni/psiphon/tunnel-core/psiphon/common/parameters"
 	"github.com/ooni/psiphon/tunnel-core/psiphon/common/prng"
 	"github.com/ooni/psiphon/tunnel-core/psiphon/common/protocol"
+	"github.com/ooni/psiphon/tunnel-core/psiphon/common/resolver"
 	"github.com/ooni/psiphon/tunnel-core/psiphon/common/values"
 	utls "github.com/refraction-networking/utls"
 	regen "github.com/zach-klippenstein/goregen"
@@ -137,8 +139,11 @@ type DialParameters struct {
 
 	DialDuration time.Duration `json:"-"`
 
-	dialConfig *DialConfig
-	meekConfig *MeekConfig
+	resolver          *resolver.Resolver `json:"-"`
+	ResolveParameters *resolver.ResolveParameters
+
+	dialConfig *DialConfig `json:"-"`
+	meekConfig *MeekConfig `json:"-"`
 }
 
 // MakeDialParameters creates a new DialParameters for the candidate server
@@ -189,6 +194,7 @@ func MakeDialParameters(
 	replayUserAgent := p.Bool(parameters.ReplayUserAgent)
 	replayAPIRequestPadding := p.Bool(parameters.ReplayAPIRequestPadding)
 	replayHoldOffTunnel := p.Bool(parameters.ReplayHoldOffTunnel)
+	replayResolveParameters := p.Bool(parameters.ReplayResolveParameters)
 
 	// Check for existing dial parameters for this server/network ID.
 
@@ -285,6 +291,12 @@ func MakeDialParameters(
 
 	if !isReplay {
 		dialParams = &DialParameters{}
+	}
+
+	// Point to the current resolver to be used in dials.
+	dialParams.resolver = config.GetResolver()
+	if dialParams.resolver == nil {
+		return nil, errors.TraceNew("missing resolver")
 	}
 
 	if isExchanged {
@@ -709,6 +721,27 @@ func MakeDialParameters(
 		}
 	}
 
+	// Initialize dialParams.ResolveParameters for dials that will resolve
+	// domain names, which currently includes fronted meek and Conjure API
+	// registration, where the dial address is not an IP address.
+	//
+	// dialParams.ResolveParameters must be nil when the dial address is an IP
+	// address to ensure that no DNS dial parameters are reported in metrics
+	// or diagnostics when when no domain is resolved.
+
+	useResolver := (protocol.TunnelProtocolUsesFrontedMeek(dialParams.TunnelProtocol) ||
+		dialParams.ConjureAPIRegistration) &&
+		net.ParseIP(dialParams.MeekFrontingDialAddress) == nil
+
+	if (!isReplay || !replayResolveParameters) && useResolver {
+
+		dialParams.ResolveParameters, err = dialParams.resolver.MakeResolveParameters(
+			p, dialParams.FrontingProviderID)
+		if err != nil {
+			return nil, errors.Trace(err)
+		}
+	}
+
 	if !isReplay || !replayHoldOffTunnel {
 
 		if common.Contains(
@@ -860,14 +893,34 @@ func MakeDialParameters(
 
 	// Initialize Dial/MeekConfigs to be passed to the corresponding dialers.
 
+	// Custom ResolveParameters are set only when useResolver is true, but
+	// DialConfig.ResolveIP is required and wired up unconditionally. Any
+	// misconfigured or miscoded domain dial cases will use default
+	// ResolveParameters.
+	//
+	// ResolveIP will use the networkID obtained above, as it will be used
+	// almost immediately, instead of incurring the overhead of calling
+	// GetNetworkID again.
+	resolveIP := func(ctx context.Context, hostname string) ([]net.IP, error) {
+		IPs, err := dialParams.resolver.ResolveIP(
+			ctx,
+			networkID,
+			dialParams.ResolveParameters,
+			hostname)
+		if err != nil {
+			return nil, errors.Trace(err)
+		}
+		return IPs, nil
+	}
+
 	dialParams.dialConfig = &DialConfig{
 		DiagnosticID:                  serverEntry.GetDiagnosticID(),
 		UpstreamProxyURL:              config.UpstreamProxyURL,
 		CustomHeaders:                 dialCustomHeaders,
 		BPFProgramInstructions:        dialParams.BPFProgramInstructions,
 		DeviceBinder:                  config.deviceBinder,
-		DnsServerGetter:               config.DnsServerGetter,
 		IPv6Synthesizer:               config.IPv6Synthesizer,
+		ResolveIP:                     resolveIP,
 		TrustedCACertificatesFilename: config.TrustedCACertificatesFilename,
 		FragmentorConfig:              fragmentor.NewUpstreamConfig(p, dialParams.TunnelProtocol, dialParams.FragmentorSeed),
 		UpstreamProxyErrorCallback:    upstreamProxyErrorCallback,

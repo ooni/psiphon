@@ -39,6 +39,8 @@ import (
 	"github.com/ooni/psiphon/tunnel-core/psiphon/common/errors"
 	"github.com/ooni/psiphon/tunnel-core/psiphon/common/parameters"
 	"github.com/ooni/psiphon/tunnel-core/psiphon/common/protocol"
+	"github.com/ooni/psiphon/tunnel-core/psiphon/common/resolver"
+	"github.com/ooni/psiphon/tunnel-core/psiphon/common/transforms"
 )
 
 const (
@@ -281,15 +283,25 @@ type Config struct {
 	// when reporting ClientFeatures.
 	DeviceBinder DeviceBinder
 
+	// AllowDefaultDNSResolverWithBindToDevice indicates that it's safe to use
+	// the default resolver when DeviceBinder is configured, as the host OS
+	// will automatically exclude DNS requests from the VPN.
+	AllowDefaultDNSResolverWithBindToDevice bool
+
 	// IPv6Synthesizer is an interface that allows tunnel-core to call into
 	// the host application to synthesize IPv6 addresses. See: IPv6Synthesizer
 	// doc.
 	IPv6Synthesizer IPv6Synthesizer
 
-	// DnsServerGetter is an interface that enables tunnel-core to call into
+	// HasIPv6RouteGetter is an interface that allows tunnel-core to call into
+	// the host application to determine if the host has an IPv6 route. See:
+	// HasIPv6RouteGetter doc.
+	HasIPv6RouteGetter HasIPv6RouteGetter
+
+	// DNSServerGetter is an interface that enables tunnel-core to call into
 	// the host application to discover the native network DNS server
-	// settings. See: DnsServerGetter doc.
-	DnsServerGetter DnsServerGetter
+	// settings. See: DNSServerGetter doc.
+	DNSServerGetter DNSServerGetter
 
 	// NetworkIDGetter in an interface that enables tunnel-core to call into
 	// the host application to get an identifier for the host's current active
@@ -771,6 +783,24 @@ type Config struct {
 	// QUICDisablePathMTUDiscoveryProbability is for testing purposes.
 	QUICDisablePathMTUDiscoveryProbability *float64
 
+	// DNSResolverAttemptsPerServer and other DNSResolver fields are for
+	// testing purposes.
+	DNSResolverAttemptsPerServer                     *int
+	DNSResolverAttemptsPerPreferredServer            *int
+	DNSResolverRequestTimeoutMilliseconds            *int
+	DNSResolverAwaitTimeoutMilliseconds              *int
+	DNSResolverPreresolvedIPAddressCIDRs             parameters.LabeledCIDRs
+	DNSResolverPreresolvedIPAddressProbability       *float64
+	DNSResolverAlternateServers                      []string
+	DNSResolverPreferredAlternateServers             []string
+	DNSResolverPreferAlternateServerProbability      *float64
+	DNSResolverProtocolTransformSpecs                transforms.Specs
+	DNSResolverProtocolTransformScopedSpecNames      transforms.ScopedSpecNames
+	DNSResolverProtocolTransformProbability          *float64
+	DNSResolverIncludeEDNS0Probability               *float64
+	DNSResolverCacheExtensionInitialTTLMilliseconds  *int
+	DNSResolverCacheExtensionVerifiedTTLMilliseconds *int
+
 	// params is the active parameters.Parameters with defaults, config values,
 	// and, optionally, tactics applied.
 	//
@@ -788,6 +818,9 @@ type Config struct {
 	networkIDGetter NetworkIDGetter
 
 	clientFeatures []string
+
+	resolverMutex sync.Mutex
+	resolver      *resolver.Resolver
 
 	committed bool
 
@@ -890,7 +923,7 @@ func (config *Config) Commit(migrateFromLegacyFields bool) error {
 	if config.DataRootDirectory == "" {
 		wd, err := os.Getwd()
 		if err != nil {
-			return errors.Trace(StripFilePathsError(err))
+			return errors.Trace(common.RedactFilePathsError(err))
 		}
 		config.DataRootDirectory = wd
 	}
@@ -900,7 +933,9 @@ func (config *Config) Commit(migrateFromLegacyFields bool) error {
 	if !common.FileExists(dataDirectoryPath) {
 		err := os.Mkdir(dataDirectoryPath, os.ModePerm)
 		if err != nil {
-			return errors.Tracef("failed to create datastore directory with error: %s", StripFilePathsError(err, dataDirectoryPath))
+			return errors.Tracef(
+				"failed to create datastore directory with error: %s",
+				common.RedactFilePathsError(err, dataDirectoryPath))
 		}
 	}
 
@@ -1007,7 +1042,9 @@ func (config *Config) Commit(migrateFromLegacyFields bool) error {
 	if !common.FileExists(dataStoreDirectoryPath) {
 		err := os.Mkdir(dataStoreDirectoryPath, os.ModePerm)
 		if err != nil {
-			return errors.Tracef("failed to create datastore directory with error: %s", StripFilePathsError(err, dataStoreDirectoryPath))
+			return errors.Tracef(
+				"failed to create datastore directory with error: %s",
+				common.RedactFilePathsError(err, dataStoreDirectoryPath))
 		}
 	}
 
@@ -1016,7 +1053,9 @@ func (config *Config) Commit(migrateFromLegacyFields bool) error {
 	if !common.FileExists(oslDirectoryPath) {
 		err := os.Mkdir(oslDirectoryPath, os.ModePerm)
 		if err != nil {
-			return errors.Tracef("failed to create osl directory with error: %s", StripFilePathsError(err, oslDirectoryPath))
+			return errors.Tracef(
+				"failed to create osl directory with error: %s",
+				common.RedactFilePathsError(err, oslDirectoryPath))
 		}
 	}
 
@@ -1205,24 +1244,32 @@ func (config *Config) Commit(migrateFromLegacyFields bool) error {
 				successfulMigrations += 1
 			}
 		}
-		NoticeInfo(fmt.Sprintf("Config migration: %d/%d legacy files successfully migrated", successfulMigrations, len(migrations)))
+		NoticeInfo(fmt.Sprintf(
+			"Config migration: %d/%d legacy files successfully migrated",
+			successfulMigrations, len(migrations)))
 
 		// Remove OSL directory if empty
 		if config.MigrateObfuscatedServerListDownloadDirectory != "" {
 			files, err := ioutil.ReadDir(config.MigrateObfuscatedServerListDownloadDirectory)
 			if err != nil {
-				NoticeWarning("Error reading OSL directory: %s", errors.Trace(StripFilePathsError(err, config.MigrateObfuscatedServerListDownloadDirectory)))
+				NoticeWarning(
+					"Error reading OSL directory: %s",
+					errors.Trace(common.RedactFilePathsError(err, config.MigrateObfuscatedServerListDownloadDirectory)))
 			} else if len(files) == 0 {
 				err := os.Remove(config.MigrateObfuscatedServerListDownloadDirectory)
 				if err != nil {
-					NoticeWarning("Error deleting empty OSL directory: %s", errors.Trace(StripFilePathsError(err, config.MigrateObfuscatedServerListDownloadDirectory)))
+					NoticeWarning(
+						"Error deleting empty OSL directory: %s",
+						errors.Trace(common.RedactFilePathsError(err, config.MigrateObfuscatedServerListDownloadDirectory)))
 				}
 			}
 		}
 
 		f, err := os.Create(migrationCompleteFilePath)
 		if err != nil {
-			NoticeWarning("Config migration: failed to create migration completed file with error %s", errors.Trace(StripFilePathsError(err, migrationCompleteFilePath)))
+			NoticeWarning(
+				"Config migration: failed to create migration completed file with error %s",
+				errors.Trace(common.RedactFilePathsError(err, migrationCompleteFilePath)))
 		} else {
 			NoticeInfo("Config migration: completed")
 			f.Close()
@@ -1282,6 +1329,20 @@ func (config *Config) SetParameters(tag string, skipOnError bool, applyParameter
 	}
 
 	return nil
+}
+
+// SetResolver sets the current resolver.
+func (config *Config) SetResolver(resolver *resolver.Resolver) {
+	config.resolverMutex.Lock()
+	defer config.resolverMutex.Unlock()
+	config.resolver = resolver
+}
+
+// GetResolver returns the current resolver. May return nil.
+func (config *Config) GetResolver() *resolver.Resolver {
+	config.resolverMutex.Lock()
+	defer config.resolverMutex.Unlock()
+	return config.resolver
 }
 
 // SetDynamicConfig sets the current client sponsor ID and authorizations.
@@ -1754,6 +1815,66 @@ func (config *Config) makeConfigParameters() map[string]interface{} {
 		applyParameters[parameters.QUICDisableClientPathMTUDiscoveryProbability] = *config.QUICDisablePathMTUDiscoveryProbability
 	}
 
+	if config.DNSResolverAttemptsPerServer != nil {
+		applyParameters[parameters.DNSResolverAttemptsPerServer] = *config.DNSResolverAttemptsPerServer
+	}
+
+	if config.DNSResolverAttemptsPerPreferredServer != nil {
+		applyParameters[parameters.DNSResolverAttemptsPerPreferredServer] = *config.DNSResolverAttemptsPerPreferredServer
+	}
+
+	if config.DNSResolverRequestTimeoutMilliseconds != nil {
+		applyParameters[parameters.DNSResolverRequestTimeout] = fmt.Sprintf("%dms", *config.DNSResolverRequestTimeoutMilliseconds)
+	}
+
+	if config.DNSResolverAwaitTimeoutMilliseconds != nil {
+		applyParameters[parameters.DNSResolverAwaitTimeout] = fmt.Sprintf("%dms", *config.DNSResolverAwaitTimeoutMilliseconds)
+	}
+
+	if config.DNSResolverPreresolvedIPAddressProbability != nil {
+		applyParameters[parameters.DNSResolverPreresolvedIPAddressProbability] = *config.DNSResolverPreresolvedIPAddressProbability
+	}
+
+	if config.DNSResolverPreresolvedIPAddressCIDRs != nil {
+		applyParameters[parameters.DNSResolverPreresolvedIPAddressCIDRs] = config.DNSResolverPreresolvedIPAddressCIDRs
+	}
+
+	if config.DNSResolverAlternateServers != nil {
+		applyParameters[parameters.DNSResolverAlternateServers] = config.DNSResolverAlternateServers
+	}
+
+	if config.DNSResolverPreferredAlternateServers != nil {
+		applyParameters[parameters.DNSResolverPreferredAlternateServers] = config.DNSResolverPreferredAlternateServers
+	}
+
+	if config.DNSResolverPreferAlternateServerProbability != nil {
+		applyParameters[parameters.DNSResolverPreferAlternateServerProbability] = *config.DNSResolverPreferAlternateServerProbability
+	}
+
+	if config.DNSResolverProtocolTransformSpecs != nil {
+		applyParameters[parameters.DNSResolverProtocolTransformSpecs] = config.DNSResolverProtocolTransformSpecs
+	}
+
+	if config.DNSResolverProtocolTransformScopedSpecNames != nil {
+		applyParameters[parameters.DNSResolverProtocolTransformScopedSpecNames] = config.DNSResolverProtocolTransformScopedSpecNames
+	}
+
+	if config.DNSResolverProtocolTransformProbability != nil {
+		applyParameters[parameters.DNSResolverProtocolTransformProbability] = *config.DNSResolverProtocolTransformProbability
+	}
+
+	if config.DNSResolverIncludeEDNS0Probability != nil {
+		applyParameters[parameters.DNSResolverIncludeEDNS0Probability] = *config.DNSResolverIncludeEDNS0Probability
+	}
+
+	if config.DNSResolverCacheExtensionInitialTTLMilliseconds != nil {
+		applyParameters[parameters.DNSResolverCacheExtensionInitialTTL] = fmt.Sprintf("%dms", *config.DNSResolverCacheExtensionInitialTTLMilliseconds)
+	}
+
+	if config.DNSResolverCacheExtensionVerifiedTTLMilliseconds != nil {
+		applyParameters[parameters.DNSResolverCacheExtensionVerifiedTTL] = fmt.Sprintf("%dms", *config.DNSResolverCacheExtensionVerifiedTTLMilliseconds)
+	}
+
 	// When adding new config dial parameters that may override tactics, also
 	// update setDialParametersHash.
 
@@ -1771,7 +1892,6 @@ func (config *Config) setDialParametersHash() {
 	// config is intended for testing only, and so these parameters are expected
 	// to be present in test runs only. It remains an important case to discard
 	// replay dial parameters when test config parameters are varied.
-	//
 	//
 	// Hashing the parameter names detects some ambiguous hash cases, such as two
 	// consecutive int64 parameters, one omitted and one not, that are flipped.
@@ -2090,6 +2210,79 @@ func (config *Config) setDialParametersHash() {
 		binary.Write(hash, binary.LittleEndian, *config.QUICDisablePathMTUDiscoveryProbability)
 	}
 
+	if config.DNSResolverAttemptsPerServer != nil {
+		hash.Write([]byte("DNSResolverAttemptsPerServer"))
+		binary.Write(hash, binary.LittleEndian, int64(*config.DNSResolverAttemptsPerServer))
+	}
+
+	if config.DNSResolverRequestTimeoutMilliseconds != nil {
+		hash.Write([]byte("DNSResolverRequestTimeoutMilliseconds"))
+		binary.Write(hash, binary.LittleEndian, int64(*config.DNSResolverRequestTimeoutMilliseconds))
+	}
+
+	if config.DNSResolverAwaitTimeoutMilliseconds != nil {
+		hash.Write([]byte("DNSResolverAwaitTimeoutMilliseconds"))
+		binary.Write(hash, binary.LittleEndian, int64(*config.DNSResolverAwaitTimeoutMilliseconds))
+	}
+
+	if config.DNSResolverPreresolvedIPAddressCIDRs != nil {
+		hash.Write([]byte("DNSResolverPreresolvedIPAddressCIDRs"))
+		encodedDNSResolverPreresolvedIPAddressCIDRs, _ :=
+			json.Marshal(config.DNSResolverPreresolvedIPAddressCIDRs)
+		hash.Write(encodedDNSResolverPreresolvedIPAddressCIDRs)
+	}
+
+	if config.DNSResolverPreresolvedIPAddressProbability != nil {
+		hash.Write([]byte("DNSResolverPreresolvedIPAddressProbability"))
+		binary.Write(hash, binary.LittleEndian, *config.DNSResolverPreresolvedIPAddressProbability)
+	}
+
+	if config.DNSResolverAlternateServers != nil {
+		hash.Write([]byte("DNSResolverAlternateServers"))
+		for _, server := range config.DNSResolverAlternateServers {
+			hash.Write([]byte(server))
+		}
+	}
+
+	if config.DNSResolverPreferAlternateServerProbability != nil {
+		hash.Write([]byte("DNSResolverPreferAlternateServerProbability"))
+		binary.Write(hash, binary.LittleEndian, *config.DNSResolverPreferAlternateServerProbability)
+	}
+
+	if config.DNSResolverProtocolTransformSpecs != nil {
+		hash.Write([]byte("DNSResolverProtocolTransformSpecs"))
+		encodedDNSResolverProtocolTransformSpecs, _ :=
+			json.Marshal(config.DNSResolverProtocolTransformSpecs)
+		hash.Write(encodedDNSResolverProtocolTransformSpecs)
+	}
+
+	if config.DNSResolverProtocolTransformScopedSpecNames != nil {
+		hash.Write([]byte(""))
+		encodedDNSResolverProtocolTransformScopedSpecNames, _ :=
+			json.Marshal(config.DNSResolverProtocolTransformScopedSpecNames)
+		hash.Write(encodedDNSResolverProtocolTransformScopedSpecNames)
+	}
+
+	if config.DNSResolverProtocolTransformProbability != nil {
+		hash.Write([]byte("DNSResolverProtocolTransformProbability"))
+		binary.Write(hash, binary.LittleEndian, *config.DNSResolverProtocolTransformProbability)
+	}
+
+	if config.DNSResolverIncludeEDNS0Probability != nil {
+		hash.Write([]byte("DNSResolverIncludeEDNS0Probability"))
+		binary.Write(hash, binary.LittleEndian, *config.DNSResolverIncludeEDNS0Probability)
+	}
+
+	if config.DNSResolverCacheExtensionInitialTTLMilliseconds != nil {
+		hash.Write([]byte("DNSResolverCacheExtensionInitialTTLMilliseconds"))
+		binary.Write(hash, binary.LittleEndian, int64(*config.DNSResolverCacheExtensionInitialTTLMilliseconds))
+	}
+
+	if config.DNSResolverCacheExtensionVerifiedTTLMilliseconds != nil {
+		hash.Write([]byte("DNSResolverCacheExtensionVerifiedTTLMilliseconds"))
+		binary.Write(hash, binary.LittleEndian, int64(*config.DNSResolverCacheExtensionVerifiedTTLMilliseconds))
+	}
+
 	config.dialParametersHash = hash.Sum(nil)
 }
 
@@ -2250,7 +2443,9 @@ func migrationsFromLegacyFilePaths(config *Config) ([]FileMigration, error) {
 
 		files, err := ioutil.ReadDir(config.MigrateObfuscatedServerListDownloadDirectory)
 		if err != nil {
-			NoticeWarning("Migration: failed to read OSL download directory with error %s", StripFilePathsError(err, config.MigrateObfuscatedServerListDownloadDirectory))
+			NoticeWarning(
+				"Migration: failed to read OSL download directory with error %s",
+				common.RedactFilePathsError(err, config.MigrateObfuscatedServerListDownloadDirectory))
 		} else {
 			for _, file := range files {
 				if oslFileRegex.MatchString(file.Name()) {
@@ -2285,7 +2480,9 @@ func migrationsFromLegacyFilePaths(config *Config) ([]FileMigration, error) {
 
 		files, err := ioutil.ReadDir(upgradeDownloadDir)
 		if err != nil {
-			NoticeWarning("Migration: failed to read upgrade download directory with error %s", StripFilePathsError(err, upgradeDownloadDir))
+			NoticeWarning(
+				"Migration: failed to read upgrade download directory with error %s",
+				common.RedactFilePathsError(err, upgradeDownloadDir))
 		} else {
 
 			for _, file := range files {

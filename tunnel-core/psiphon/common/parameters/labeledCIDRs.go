@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020, Psiphon Inc.
+ * Copyright (c) 2022, Psiphon Inc.
  * All rights reserved.
  *
  * This program is free software: you can redistribute it and/or modify
@@ -17,12 +17,26 @@
  *
  */
 
-#import "Reachability+HasNetworkConnectivity.h"
+package parameters
 
-@implementation Reachability (NetworkConnectivity)
+import (
+	"net"
 
-- (long)hasNetworkConnectivity {
-    return [self currentReachabilityStatus] != NotReachable;
+	"github.com/ooni/psiphon/tunnel-core/psiphon/common/errors"
+)
+
+// LabeledCIDRs consists of lists of CIDRs referenced by a label value.
+type LabeledCIDRs map[string][]string
+
+// Validate checks that the CIDR values are well-formed.
+func (c LabeledCIDRs) Validate() error {
+	for _, CIDRs := range c {
+		for _, CIDR := range CIDRs {
+			_, _, err := net.ParseCIDR(CIDR)
+			if err != nil {
+				return errors.Trace(err)
+			}
+		}
+	}
+	return nil
 }
-
-@end

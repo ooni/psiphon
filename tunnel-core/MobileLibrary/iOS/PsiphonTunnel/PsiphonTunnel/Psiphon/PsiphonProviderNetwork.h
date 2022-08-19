@@ -18,11 +18,14 @@
  */
 
 #import <Foundation/Foundation.h>
-#import "Psi-meta.h"
+#import <Psi/Psi.h>
 
 NS_ASSUME_NONNULL_BEGIN
 
 @interface PsiphonProviderNetwork : NSObject <GoPsiPsiphonProviderNetwork>
+
+- (instancetype)initWithLogger:(void (^__nonnull)(NSString *_Nonnull))logger;
+
 @end
 
 NS_ASSUME_NONNULL_END
