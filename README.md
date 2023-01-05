@@ -1,5 +1,8 @@
 # github.com/ooni/psiphon
 
+⚠️⚠️⚠️: As of 2023-01-05, this repository is archived because it seems we
+can depend on Psiphon just using Go modules.
+
 Package psiphon vendors psiphon-tunnel-core and some of its
 dependencies. To this end, we use the `tunnel-core` subpackage. We
 construct this repository using the `client-staging` branch of
